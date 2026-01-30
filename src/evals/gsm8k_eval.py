@@ -301,6 +301,32 @@ def main():
     acc = correct / len(ds)
     print(f"\nFinal Accuracy: {acc:.2%}")
 
+    summary = {
+        "run_name": args.run_name,
+        "model_name": args.model,
+        "adapter": args.adapter,
+        "dataset": "gsm8k",
+        "split": "test",
+        "n": len(ds),
+        "bs": args.bs,
+        "max_new_tokens": args.max_new_tokens,
+        "prompt_template": PLAIN_TEMPLATE,
+        "correct": correct,
+        "total": len(ds),
+        "acc": acc,
+        "predictions_jsonl": out_file,
+    }
+
+    summary_path = os.path.join(args.output_dir, f"{args.run_name}_summary.json")
+    with open(summary_path, "w", encoding="utf-8") as fsum:
+        json.dump(summary, fsum, indent=2)
+
+    print("[IO] saved:", summary_path)
+
+    if args.wandb and wandb:
+        wandb.save(summary_path)
+        wandb.save(out_file)
+
     if args.wandb and wandb:
         wandb.log({
             "eval/acc": acc,
