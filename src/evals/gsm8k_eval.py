@@ -1,336 +1,306 @@
 #!/usr/bin/env python3
-import os, re, json, time, argparse, random
-from dataclasses import asdict, dataclass
-from typing import Optional, List, Dict, Any
-
+import os
+import re
+import json
+import time
+import argparse
+import random
+import hashlib
 import torch
+from dataclasses import asdict, dataclass
+from typing import Optional, List
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
 from tqdm.auto import tqdm
 
+# Optional imports
 try:
     import wandb
-except Exception:
+except ImportError:
     wandb = None
 
+try:
+    from vllm import LLM, SamplingParams
+except ImportError:
+    LLM = None
 
 # -----------------------------
-# Prompting
+# 1. Configuration & Prompting
 # -----------------------------
-PAPER_STYLE_TEMPLATE = (
-    "Question: {q}\n"
-    "Answer: Let's think step by step.\n"
-    "The final answer is: "
-)
-
 PLAIN_TEMPLATE = "Question: {q}\nAnswer:"
-
 
 def build_prompt(q: str, template: str) -> str:
     return template.format(q=q)
 
+def set_repro(seed: int):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def short_hash(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]
 
 # -----------------------------
-# Answer extraction
+# 2. Robust Extraction & Normalization
 # -----------------------------
-def extract_answer(
-    text: str,
-    *,
-    strict_hash: bool = False,
-    prefer_final_answer_marker: bool = True,
-    final_answer_marker: str = "The final answer is:",
-) -> Optional[str]:
-    if text is None:
+def normalize_number(s: str) -> str:
+    if not s:
+        return s
+    s = s.replace(",", "")
+    try:
+        f_val = float(s)
+        # If it's effectively an integer (42.0), return '42'
+        if f_val.is_integer():
+            return str(int(f_val))
+        return str(f_val)
+    except ValueError:
+        return s
+
+def extract_answer(text: str) -> Optional[str]:
+    if not text:
         return None
 
-    # normalize
-    t = text.replace(",", "")
+    # 1. Try GSM8K standard '####'
+    # We take the FIRST match to avoid the "repetition loop" truncation bug.
+    match = re.search(r"####\s*([-+]?\d+(?:\.\d+)?)", text.replace(",", ""))
+    if match:
+        return normalize_number(match.group(1).strip())
 
-    # 1) Prefer "The final answer is: <num>" (paper-style)
-    if prefer_final_answer_marker and final_answer_marker:
-        # allow optional spaces after marker
-        pat = re.escape(final_answer_marker) + r"\s*([-+]?\d+(?:\.\d+)?)"
-        m = re.findall(pat, t)
-        if m:
-            return m[-1].strip()
-
-    # 2) Prefer "#### <num>" (GSM8K canonical)
-    m = re.findall(r"####\s*([-+]?\d+(?:\.\d+)?)", t)
-    if m:
-        return m[-1].strip()
-
-    if strict_hash:
-        return None
-
-    # 3) Fallback: last number-like
-    m2 = re.findall(r"[-+]?\d+(?:\.\d+)?", t)
-    if m2:
-        return m2[-1].strip()
+    # 2. Fallback: Last number
+    numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", text.replace(",", ""))
+    if numbers:
+        return normalize_number(numbers[-1].strip())
 
     return None
 
-
 # -----------------------------
-# Utilities
+# 3. Model Backend: Merge
 # -----------------------------
-def ensure_dir(p: str) -> None:
-    os.makedirs(p, exist_ok=True)
+def merge_and_save(base_model: str, adapter: str, out_dir: str):
+    """Merges LoRA into base model safely with sharding."""
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import PeftModel
 
+    print(f"[MERGE] Loading base: {base_model}")
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
 
-def get_device(model) -> torch.device:
-    return next(model.parameters()).device
-
-
-def set_repro(seed: int) -> None:
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    # Greedy decoding is deterministic anyway, but keep this for consistency.
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.set_float32_matmul_precision("high")
-
-
-@dataclass
-class EvalSummary:
-    run_name: str
-    adapter: str
-    model_name: str
-    dataset: str
-    split: str
-    n: int
-    bs: int
-    max_input_len: int
-    max_new_tokens: int
-    prompt_template: str
-    strict_hash: bool
-    prefer_final_answer_marker: bool
-    final_answer_marker: str
-    do_sample: bool
-    temperature: float
-    correct: int
-    total: int
-    acc: float
-    out_jsonl: str
-    out_summary: str
-    seconds: float
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--run_name", required=True)
-    ap.add_argument("--model", default="allenai/OLMoE-1B-7B-0924")
-    ap.add_argument("--adapter", default=None, help="HF repo id or local path. Omit for base model.")
-    ap.add_argument("--save_root", default="/workspace/evals")
-
-    ap.add_argument("--prompt_style", choices=["plain", "paper"], default="paper")
-    ap.add_argument("--custom_template", default=None, help="If set, overrides prompt_style template.")
-
-    ap.add_argument("--bs", type=int, default=8)
-    ap.add_argument("--max_new_tokens", type=int, default=256)
-    ap.add_argument("--max_input_len", type=int, default=1024)
-    ap.add_argument("--n", type=int, default=None, help="Eval first n examples (debug).")
-
-    ap.add_argument("--strict_hash", action="store_true")
-    ap.add_argument("--prefer_final_answer_marker", action="store_true")
-    ap.add_argument("--final_answer_marker", default="The final answer is:")
-
-    ap.add_argument("--seed", type=int, default=123)
-
-    ap.add_argument("--wandb", action="store_true")
-    ap.add_argument("--wandb_project", default="hellora-repro")
-    ap.add_argument("--wandb_entity", default=None)
-    ap.add_argument("--log_wrong_k", type=int, default=50)
-
-    args = ap.parse_args()
-    set_repro(args.seed)
-
-    # choose prompt template
-    if args.custom_template:
-        prompt_template = args.custom_template
-    else:
-        prompt_template = PAPER_STYLE_TEMPLATE if args.prompt_style == "paper" else PLAIN_TEMPLATE
-
-    out_dir = os.path.join(args.save_root, "gsm8k", args.run_name)
-    ensure_dir(out_dir)
-    out_jsonl = os.path.join(out_dir, "predictions.jsonl")
-    out_summary = os.path.join(out_dir, "summary.json")
-
-    # tokenizer
-    tok = AutoTokenizer.from_pretrained(args.model, use_fast=True)
-    tok.padding_side = "left"
-    if tok.pad_token_id is None:
-        tok.pad_token = tok.eos_token
-
-    # model
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
+    # Use bfloat16 for Ampere (A40/A6000)
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        trust_remote_code=True
     )
-    adapter_tag = "BASE"
-    if args.adapter:
-        model = PeftModel.from_pretrained(model, args.adapter)
-        adapter_tag = args.adapter
+
+    print(f"[MERGE] Loading adapter: {adapter}")
+    model = PeftModel.from_pretrained(base, adapter)
+    model = model.merge_and_unload()
+
+    print(f"[MERGE] Saving to: {out_dir}")
+    # Shard size 2GB to prevent OOM
+    model.save_pretrained(out_dir, safe_serialization=True, max_shard_size="2GB")
+    tokenizer.save_pretrained(out_dir)
+    return out_dir
+
+# -----------------------------
+# 4. Inference Engines
+# -----------------------------
+def run_inference_vllm(model_path: str, prompts: List[str], max_tokens: int, tp: int) -> List[str]:
+    if LLM is None:
+        raise ImportError("vLLM not installed.")
+
+    print(f"[VLLM] Initializing engine (max_tokens={max_tokens})...")
+    llm = LLM(
+        model=model_path,
+        dtype="bfloat16",
+        tensor_parallel_size=tp,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.90
+    )
+
+    # FIX: Stop on newline+Question to avoid stopping mid-reasoning
+    # FIX: Added \n\nQuestion: just in case formatting varies
+    sampling_params = SamplingParams(
+        temperature=0,
+        max_tokens=max_tokens,
+        stop=["\nQuestion:", "\n\nQuestion:"]
+    )
+
+    outputs = llm.generate(prompts, sampling_params)
+    return [out.outputs[0].text for out in outputs]
+
+def run_inference_hf(model_path: str, adapter: str, prompts: List[str], max_tokens: int, bs: int) -> List[str]:
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import PeftModel
+
+    print(f"[HF] Initializing (Batch Size={bs})...")
+    tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left")
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True
+    )
+
+    if adapter:
+        print(f"[HF] Loading LoRA: {adapter}")
+        model = PeftModel.from_pretrained(model, adapter)
 
     model.eval()
-    device = get_device(model)
 
-    # dataset
-    ds = load_dataset("openai/gsm8k", "main", split="test")
-    if args.n is not None:
-        ds = ds.select(range(min(args.n, len(ds))))
+    results: List[str] = []
 
-    # wandb
-    wb_run = None
-    wrong_table = None
-    wrong_logged = 0
-    if args.wandb:
-        if wandb is None:
-            raise RuntimeError("wandb not installed/importable.")
-        wb_run = wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=f"eval/gsm8k/{args.run_name}",
-            config={
-                "task": "eval",
-                "dataset": "gsm8k",
-                "split": "test",
-                "model_id": args.model,
-                "adapter": adapter_tag,
-                "prompt_style": args.prompt_style,
-                "prompt_template": prompt_template,
-                "n": len(ds),
-                "bs": args.bs,
-                "max_input_len": args.max_input_len,
-                "max_new_tokens": args.max_new_tokens,
-                "do_sample": False,
-                "temperature": 0.0,
-                "seed": args.seed,
-                "strict_hash": args.strict_hash,
-                "prefer_final_answer_marker": args.prefer_final_answer_marker,
-                "final_answer_marker": args.final_answer_marker,
-            },
+    for i in tqdm(range(0, len(prompts), bs), desc="HF Inference"):
+        batch_prompts = prompts[i : i + bs]
+
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
         )
-        wrong_table = wandb.Table(columns=["question", "gold_answer", "pred_answer", "pred_text"])
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    correct = 0
-    total = 0
+        input_seq_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=0.0,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        gen_only = outputs[:, input_seq_len:]
+        decoded = tokenizer.batch_decode(gen_only, skip_special_tokens=True)
+        results.extend(decoded)
+
+    return results
+
+# -----------------------------
+# 5. Main Execution
+# -----------------------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run_name", required=True)
+    parser.add_argument("--model", default="allenai/OLMoE-1B-7B-0924")
+    parser.add_argument("--adapter", default=None)
+    parser.add_argument("--backend", choices=["hf", "vllm"], default="vllm")
+    parser.add_argument("--seed", type=int, default=123)
+
+    parser.add_argument("--merge_dir", default="./merged_models")
+    parser.add_argument("--output_dir", default="./eval_results")
+
+    parser.add_argument("--bs", type=int, default=8)
+    parser.add_argument("--n", type=int, default=None)
+    parser.add_argument("--max_new_tokens", type=int, default=1024)
+
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb_project", default="hellora-repro")
+
+    args = parser.parse_args()
+    set_repro(args.seed)
+
+    # A. Data
+    print("Loading GSM8K...")
+    ds = load_dataset("openai/gsm8k", "main", split="test")
+    if args.n:
+        ds = ds.select(range(args.n))
+
+    prompts = [build_prompt(q, PLAIN_TEMPLATE) for q in ds["question"]]
+    golds = ds["answer"]
+
+    # B. Auto-Merge (vLLM only)
+    effective_model = args.model
+    run_adapter = args.adapter
+
+    if args.backend == "vllm" and args.adapter:
+        merge_name = f"merged_{short_hash(args.model)}_{short_hash(args.adapter)}"
+        merge_path = os.path.join(args.merge_dir, merge_name)
+
+        if not os.path.exists(os.path.join(merge_path, "config.json")):
+            print(f"[SETUP] Merging adapter to {merge_path}...")
+            merge_and_save(args.model, args.adapter, merge_path)
+        else:
+            print(f"[SETUP] Using cached merge: {merge_path}")
+
+        effective_model = merge_path
+        run_adapter = None
+
+    # C. Inference
+    print(f"Starting Inference ({args.backend})...")
     t0 = time.time()
 
-    with open(out_jsonl, "w", encoding="utf-8") as f_jsonl, torch.inference_mode():
-        for i in tqdm(range(0, len(ds), args.bs), desc="gsm8k eval"):
-            batch = ds[i : i + args.bs]
-            questions = batch["question"]
-            gold_texts = batch["answer"]
+    if args.backend == "vllm":
+        outputs = run_inference_vllm(effective_model, prompts, args.max_new_tokens, tp=1)
+    else:
+        outputs = run_inference_hf(effective_model, run_adapter, prompts, args.max_new_tokens, args.bs)
 
-            prompts = [build_prompt(q, prompt_template) for q in questions]
-            inputs = tok(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=args.max_input_len,
-            )
-            # move tensors to model device
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+    duration = time.time() - t0
+    print(f"Inference done in {duration:.2f}s")
 
-            # per-example prompt lengths (handles left padding correctly)
-            prompt_lens = inputs["attention_mask"].sum(dim=1).tolist()
+    # D. W&B Setup
+    if args.wandb and wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=f"gsm8k/{args.run_name}",
+            config=vars(args)
+        )
+        wb_table = wandb.Table(columns=["question", "gold_answer", "pred_answer", "pred_text"])
 
-            out = model.generate(
-                **inputs,
-                do_sample=False,
-                temperature=0.0,
-                max_new_tokens=args.max_new_tokens,
-                pad_token_id=tok.pad_token_id,
-                eos_token_id=tok.eos_token_id,
-            )
+    # E. Score & Save
+    correct = 0
+    wrong_logged = 0
+    results = []
 
-            # decode per-example generated continuation
-            gen_texts: List[str] = []
-            for j in range(out.size(0)):
-                pl = int(prompt_lens[j])
-                gen_ids = out[j, pl:]
-                gen_texts.append(tok.decode(gen_ids, skip_special_tokens=True))
+    os.makedirs(args.output_dir, exist_ok=True)
+    out_file = os.path.join(args.output_dir, f"{args.run_name}.jsonl")
 
-            for q, gold, pred_text in zip(questions, gold_texts, gen_texts):
-                gold_ans = extract_answer(
-                    gold,
-                    strict_hash=False,  # gsm8k gold has ####
-                    prefer_final_answer_marker=False,
-                )
-                pred_ans = extract_answer(
-                    pred_text,
-                    strict_hash=args.strict_hash,
-                    prefer_final_answer_marker=args.prefer_final_answer_marker,
-                    final_answer_marker=args.final_answer_marker,
-                )
+    print("Scoring results...")
+    with open(out_file, "w") as f:
+        # Use tqdm for scoring progress too, it's fast but good to see
+        for q, gold, pred in tqdm(zip(ds["question"], golds, outputs), total=len(prompts), desc="Scoring"):
+            # Extract & Normalize
+            gold_ans = extract_answer(gold)
+            pred_ans = extract_answer(pred)
 
-                ok = (gold_ans is not None) and (pred_ans is not None) and (gold_ans == pred_ans)
-                total += 1
-                correct += int(ok)
+            # Comparison (String equality after normalization)
+            is_correct = (gold_ans is not None) and (pred_ans is not None) and (gold_ans == pred_ans)
+            if is_correct:
+                correct += 1
 
-                rec = {
-                    "question": q,
-                    "gold_text": gold,
-                    "pred_text": pred_text,
-                    "gold_answer": gold_ans,
-                    "pred_answer": pred_ans,
-                    "correct": bool(ok),
-                }
-                f_jsonl.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            res = {
+                "question": q,
+                "gold_text": gold,
+                "pred_text": pred,
+                "gold_ans": gold_ans,
+                "pred_ans": pred_ans,
+                "correct": is_correct
+            }
+            f.write(json.dumps(res) + "\n")
+            results.append(res)
 
-                if wrong_table is not None and (not ok) and wrong_logged < args.log_wrong_k:
-                    wrong_table.add_data(q, gold_ans, pred_ans, pred_text)
-                    wrong_logged += 1
+            # W&B Logging (Only wrong answers, first 100)
+            if args.wandb and wandb and (not is_correct) and wrong_logged < 100:
+                 wb_table.add_data(q, gold_ans, pred_ans, pred)
+                 wrong_logged += 1
 
-    secs = time.time() - t0
-    acc = (correct / total) if total else 0.0
+    acc = correct / len(ds)
+    print(f"\nFinal Accuracy: {acc:.2%}")
 
-    summary = EvalSummary(
-        run_name=args.run_name,
-        adapter=adapter_tag,
-        model_name=args.model,
-        dataset="gsm8k",
-        split="test",
-        n=len(ds),
-        bs=args.bs,
-        max_input_len=args.max_input_len,
-        max_new_tokens=args.max_new_tokens,
-        prompt_template=prompt_template,
-        strict_hash=args.strict_hash,
-        prefer_final_answer_marker=args.prefer_final_answer_marker,
-        final_answer_marker=args.final_answer_marker,
-        do_sample=False,
-        temperature=0.0,
-        correct=correct,
-        total=total,
-        acc=acc,
-        out_jsonl=out_jsonl,
-        out_summary=out_summary,
-        seconds=secs,
-    )
-
-    with open(out_summary, "w", encoding="utf-8") as f:
-        json.dump(asdict(summary), f, indent=2)
-
-    if wb_run is not None:
+    if args.wandb and wandb:
         wandb.log({
             "eval/acc": acc,
             "eval/correct": correct,
-            "eval/total": total,
-            "eval/seconds": secs,
-            "eval/wrong_logged": wrong_logged,
+            "eval/total": len(ds),
+            "eval/wrong_examples": wb_table
         })
-        if wrong_table is not None:
-            wandb.log({"eval/wrong_examples": wrong_table})
         wandb.finish()
-
-    print("[IO] saved:", out_jsonl)
-    print("[IO] saved:", out_summary)
-    print(f"[DONE] acc={acc:.4f}  correct={correct}/{total}  seconds={secs:.1f}")
-
 
 if __name__ == "__main__":
     main()
