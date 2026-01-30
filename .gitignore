@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs
+outputs/
+*.jsonl
+*.json
+
+# HF / caches
+.cache/
+wandb/
