@@ -13,7 +13,8 @@ def main():
 
     # --- Hot Mode ---
     parser.add_argument("--k", type=int, default=16)
-    parser.add_argument("--telemetry", type=str, help="Path to telemetry .pt (Required for hot mode)")
+    parser.add_argument("--telemetry", type=str, help="Path to telemetry .pt")
+    parser.add_argument("--hotmap", type=str, help="Path to hotmap .json")
     parser.add_argument("--hotmap_mode", type=str, default="counts", choices=["counts", "mass"])
 
     # --- Hyperparams (Default None = Use Registry/Config) ---
@@ -37,9 +38,12 @@ def main():
     # Hotmap
     hotmap_path = None
     if args.mode == "hot":
-        if not args.telemetry:
-            raise ValueError("--telemetry required for hot mode!")
-        hotmap_path = build_hotmap(args.telemetry, k=args.k, mode=args.hotmap_mode)
+        if args.hotmap:
+            hotmap_path = args.hotmap
+        elif args.telemetry:
+            hotmap_path = build_hotmap(args.telemetry, k=args.k, mode=args.hotmap_mode)
+        else:
+            raise ValueError("hot mode requires --hotmap or --telemetry")
 
     # Launch
     print(f"Launching: {run_name}")
