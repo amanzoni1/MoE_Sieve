@@ -6,7 +6,7 @@ from typing import Optional, List, Dict
 from datasets import load_dataset
 
 from .config import SYS_CFG
-from .profiler_engine import ProfilerEngine
+from .profiler import ProfilerEngine
 from .data_registry import DATASETS
 
 def make_profile(
@@ -31,7 +31,8 @@ def make_profile(
     text_fn = ds_cfg["text_fn"]
 
     # Load raw dataset
-    raw_ds = load_dataset(ds_cfg["path"], ds_cfg["name"], split=ds_cfg["split"])
+    target_split = split if split else ds_cfg["split"]
+    raw_ds = load_dataset(ds_cfg["path"], ds_cfg["name"], split=target_split)
     raw_ds = raw_ds.shuffle(seed=seed)
 
     if n_samples is not None:

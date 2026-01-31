@@ -87,8 +87,10 @@ def get_targets(model, mode: str, hotmap_json: Optional[str] = None) -> List[str
         layers = model.layers
 
     num_layers = len(layers)
-    # Safely get num_experts from config or first layer
-    num_experts = getattr(model.config, "num_experts", 64)
+    try:
+        num_experts = len(layers[0].mlp.experts)
+    except AttributeError:
+        num_experts = getattr(model.config, "num_experts", 64)
 
     print(f"🎯 Building targets for mode='{mode}' (L={num_layers}, E={num_experts})...")
 
@@ -105,7 +107,6 @@ def get_targets(model, mode: str, hotmap_json: Optional[str] = None) -> List[str
     elif mode == "hot":
         if not hotmap_json:
             raise ValueError("Mode 'hot' requires a valid 'hotmap_json' path.")
-
         hot_map = load_hotmap(hotmap_json)
         expert_targets = targets_hot_experts(hot_map)
         targets += expert_targets

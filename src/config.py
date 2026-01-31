@@ -1,11 +1,11 @@
 import os
-import torch
 from dataclasses import dataclass
 
 @dataclass
 class SystemConfig:
-    # Auto-detect environment
-    IS_COLAB: bool = "COLAB_GPU" in os.environ
+    @property
+    def IS_COLAB(self) -> bool:
+        return "COLAB_GPU" in os.environ
 
     # Paths
     @property
@@ -26,20 +26,29 @@ class SystemConfig:
 
 @dataclass
 class TrainConfig:
+    # --- Static Project Defaults ---
     model_id: str = "allenai/OLMoE-1B-7B-0924"
     seed: int = 123
     max_len: int = 2048
 
-    # Optimized for A6000/A100 (Effective Batch = 128)
+    # --- Hardware / Paper Training Defaults ---
     per_device_bs: int = 8
-    grad_acc: int = 16
+    grad_acc: int = 8
+    gradient_checkpointing: bool = True
+    use_cache: bool = False
+    tf32: bool = True
 
-    # Paper Hyperparams
+    # --- Fallback Training Schedules ---
+    epochs: int = 3
+    logging_steps: int = 23
+    save_total_limit: int = 2
+
+    # --- LoRA Hyperparameters ---
     r: int = 32
     alpha: int = 64
     dropout: float = 0.05
 
-    # Flags
+    # --- Tracking ---
     use_wandb: bool = True
     wandb_project: str = "hellora-repro"
 
