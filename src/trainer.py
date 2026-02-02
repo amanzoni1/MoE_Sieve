@@ -91,12 +91,32 @@ def run_training(
 
     hot_k = infer_hot_k(hotmap_json) if mode == "hot" else None
 
+    use_wandb_eff = use_wandb if use_wandb is not None else TRAIN_CFG.use_wandb
+    project_eff = wandb_project if wandb_project is not None else TRAIN_CFG.wandb_project
+
     if push_to_hub and not hub_repo:
         raise ValueError("push_to_hub=True requires hub_repo like 'username/repo_name'")
 
+    print("\n" + "=" * 80)
+    print("RUN CONFIG")
+    print(f"  model_id:      {TRAIN_CFG.model_id}")
+    print(f"  dataset:       {dataset_key}")
+    print(f"  run_name:      {run_name}")
+    print(f"  mode:          {mode}")
+    print(f"  hotmap_json:   {hotmap_json}")
+    print(f"  hot_k:         {hot_k}")
+    print(f"  lr:            {lr_eff}")
+    print(f"  epochs:        {epochs_eff}")
+    print(f"  bs:            {bs_eff}")
+    print(f"  grad_acc:      {grad_acc_eff}")
+    print(f"  max_len:       {max_len_eff}")
+    print(f"  train_samples: {train_samples}")
+    print(f"  lora:          r={r_eff}, alpha={alpha_eff}, dropout={dropout_eff}")
+    print(f"  wandb:         {use_wandb_eff} (project={project_eff})")
+    print(f"  push_to_hub:   {push_to_hub} (repo={hub_repo}, private={hub_private})")
+    print("=" * 80 + "\n")
+
     # W&B Init
-    use_wandb_eff = use_wandb if use_wandb is not None else TRAIN_CFG.use_wandb
-    project_eff = wandb_project if wandb_project is not None else TRAIN_CFG.wandb_project
     if use_wandb_eff and wandb is not None:
         wandb.init(
             project=project_eff,
@@ -129,7 +149,7 @@ def run_training(
 
     model = AutoModelForCausalLM.from_pretrained(
         TRAIN_CFG.model_id,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True
     )
@@ -225,7 +245,6 @@ def run_training(
     t0 = time.time()
     trainer.train()
     t1 = time.time()
-
     duration = round(t1 - t0, 1)
     print(f"Training Complete in {duration}s")
     if use_wandb_eff and wandb is not None:
@@ -248,9 +267,20 @@ def run_training(
             repo_type="model",
             folder_path=final_path,
             path_in_repo=".",
-            ignore_patterns=["**/checkpoint-*"]
         )
         print(f"[HF] Pushed final_adapter to: {hub_repo}")
+
+        # Upload small run artifacts
+        for fname in ("run_config.json", "targets.json", "hotmap_used.json"):
+            local_path = os.path.join(out_dir, fname)
+            if os.path.exists(local_path):
+                api.upload_file(
+                    repo_id=hub_repo,
+                    repo_type="model",
+                    path_or_fileobj=local_path,
+                    path_in_repo=f"run_artifacts/{fname}",
+                )
+        print(f"[HF] Pushed run_artifacts to: {hub_repo}/run_artifacts/")
 
     if use_wandb_eff and wandb is not None:
         wandb.finish()

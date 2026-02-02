@@ -89,34 +89,43 @@ def get_targets(model, mode: str, hotmap_json: Optional[str] = None) -> List[str
     num_layers = len(layers)
     num_experts = getattr(model.config, "num_experts", 64)
 
-    print(f"🎯 Building targets for mode='{mode}' (L={num_layers}, E={num_experts})...")
+    print(f"Building targets for mode='{mode}' (L={num_layers}, E={num_experts})...")
 
-    # 1. Always target Attention & Routers
-    targets = []
-    targets += targets_attention(num_layers)
-    targets += targets_router_gates(num_layers)
+    # Always target Attention & Routers
+    attn_targets = targets_attention(num_layers)
+    gate_targets = targets_router_gates(num_layers)
+    targets = attn_targets + gate_targets
 
-    # 2. Add Experts based on Mode
+    # Add Experts based on Mode
     if mode == "full":
-        targets += targets_all_experts(num_layers, num_experts)
-        print(f"   + Added ALL experts (Full LoRA)")
+        expert_targets = targets_all_experts(num_layers, num_experts)
+        targets += expert_targets
+
+        print(f"   + Attention targets: {len(attn_targets)}")
+        print(f"   + Router gate targets: {len(gate_targets)}")
+        print(f"   + Expert targets (FULL): {len(expert_targets)}")
 
     elif mode == "hot":
         if not hotmap_json:
             raise ValueError("Mode 'hot' requires a valid 'hotmap_json' path.")
+
         hot_map = load_hotmap(hotmap_json)
         expert_targets = targets_hot_experts(hot_map)
         targets += expert_targets
 
-        # Calculate stats for logging
+        print(f"   + Attention targets: {len(attn_targets)}")
+        print(f"   + Router gate targets: {len(gate_targets)}")
+        print(f"   + Expert targets (HOT): {len(expert_targets)}")
+
+        # Hotmap intent stats (based on JSON content)
         total_slots = num_layers * num_experts
         active_slots = sum(len(v) for v in hot_map.values())
-        print(f"   + Added HOT experts from map: {hotmap_json}")
-        print(f"   + Active Experts: {active_slots} / {total_slots} ({active_slots/total_slots:.1%})")
+        print(f"   + Hotmap file: {hotmap_json}")
+        print(f"   + Active Experts (from hotmap): {active_slots} / {total_slots} ({active_slots/total_slots:.1%})")
 
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    # 3. Validate against actual model
+    # Validate against actual model
     final_targets = validate_targets(model, targets)
     return final_targets
