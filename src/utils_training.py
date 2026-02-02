@@ -87,10 +87,7 @@ def get_targets(model, mode: str, hotmap_json: Optional[str] = None) -> List[str
         layers = model.layers
 
     num_layers = len(layers)
-    try:
-        num_experts = len(layers[0].mlp.experts)
-    except AttributeError:
-        num_experts = getattr(model.config, "num_experts", 64)
+    num_experts = getattr(model.config, "num_experts", 64)
 
     print(f"🎯 Building targets for mode='{mode}' (L={num_layers}, E={num_experts})...")
 
