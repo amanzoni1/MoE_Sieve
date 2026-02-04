@@ -151,7 +151,7 @@ def run_training(
     model = AutoModelForCausalLM.from_pretrained(
         TRAIN_CFG.model_id,
         dtype=torch.bfloat16,
-        device_map="sdpa",
+        attn_implementation="sdpa",
         trust_remote_code=True
     )
 
