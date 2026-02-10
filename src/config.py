@@ -28,7 +28,7 @@ class SystemConfig:
 class TrainConfig:
     # --- Static Project Defaults ---
     model_id: str = "allenai/OLMoE-1B-7B-0924"
-    seed: int = 123
+    seed: int = 42
     max_len: int = 2048
 
     # --- Hardware / Paper Training Defaults ---
