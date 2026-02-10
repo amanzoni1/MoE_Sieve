@@ -65,6 +65,7 @@ def run_training(
     push_to_hub: bool = False,
     hub_repo: Optional[str] = None,
     hub_private: bool = False,
+    cleanup_after_push: bool = False,
 ):
     # Global Setup
     seed_eff = seed if seed is not None else TRAIN_CFG.seed
@@ -283,6 +284,12 @@ def run_training(
                     path_in_repo=f"run_artifacts/{fname}",
                 )
         print(f"[HF] Pushed run_artifacts to: {hub_repo}/run_artifacts/")
+
+        if cleanup_after_push:
+            # Remove the full run output directory to reclaim disk after a successful push
+            if os.path.isdir(out_dir):
+                shutil.rmtree(out_dir, ignore_errors=True)
+                print(f"[Cleanup] Deleted local run dir: {out_dir}")
 
     if use_wandb_eff and wandb is not None:
         wandb.finish()
