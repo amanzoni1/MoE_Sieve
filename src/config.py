@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+PROJECT_SLUG = "MoE_Sieve_Experiments"
+
 @dataclass
 class SystemConfig:
     @property
@@ -10,14 +12,18 @@ class SystemConfig:
     # Paths
     @property
     def ROOT_DIR(self):
+        env_root = os.getenv("MOE_SIEVE_ROOT_DIR")
+        if env_root:
+            return env_root
+
         if self.IS_COLAB:
             from google.colab import drive
             if not os.path.exists("/content/drive"):
                 drive.mount("/content/drive")
-            return "/content/drive/MyDrive/HELLoRA_Experiments"
+            return f"/content/drive/MyDrive/{PROJECT_SLUG}"
         else:
             # RunPod / Local
-            return "/workspace/HELLoRA_Experiments" if os.path.exists("/workspace") else "./HELLoRA_Experiments"
+            return f"/workspace/{PROJECT_SLUG}" if os.path.exists("/workspace") else f"./{PROJECT_SLUG}"
 
     def get_output_dir(self, subdir: str):
         path = os.path.join(self.ROOT_DIR, subdir)
@@ -50,7 +56,7 @@ class TrainConfig:
 
     # --- Tracking ---
     use_wandb: bool = True
-    wandb_project: str = "hellora-repro"
+    wandb_project: str = "moe-sieve"
 
 SYS_CFG = SystemConfig()
 TRAIN_CFG = TrainConfig()

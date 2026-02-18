@@ -14,7 +14,7 @@ def make_profile(
     model,
     tokenizer,
     run_name: str = "default",
-    split: str = "train",
+    split: Optional[str] = None,
     seed: int = 123,
     n_samples: Optional[int] = None,
     bs: int = 16,
@@ -31,12 +31,16 @@ def make_profile(
     text_fn = ds_cfg["text_fn"]
 
     # Load raw dataset
-    target_split = split if split else ds_cfg["split"]
+    target_split = split or ds_cfg["split"]
     raw_ds = load_dataset(ds_cfg["path"], ds_cfg["name"], split=target_split)
     raw_ds = raw_ds.shuffle(seed=seed)
 
     if n_samples is not None:
         raw_ds = raw_ds.select(range(min(n_samples, len(raw_ds))))
+
+    selected_n = len(raw_ds)
+    skipped_short = 0
+    profiled_examples = 0
 
     eng = ProfilerEngine(
         model=model,
@@ -50,38 +54,46 @@ def make_profile(
     eng.attach_hooks()
     try:
         buf = []
-        pbar = tqdm(total=len(raw_ds), desc=f"Profiling {dataset_key}")
+        pbar = tqdm(total=selected_n, desc=f"Profiling {dataset_key}")
+        try:
+            for ex in raw_ds:
+                pbar.update(1)
+                text = text_fn(ex)
+                if not isinstance(text, str) or len(text) < 10:
+                    skipped_short += 1
+                    continue
 
-        for ex in raw_ds:
-            text = text_fn(ex)
-            if not isinstance(text, str) or len(text) < 10:
-                continue
+                buf.append(text)
 
-            buf.append(text)
+                if len(buf) == bs:
+                    eng._process_batch(buf)
+                    profiled_examples += len(buf)
+                    buf = []
 
-            if len(buf) == bs:
+            if buf:
                 eng._process_batch(buf)
-                pbar.update(len(buf))
-                buf = []
-
-        if buf:
-            eng._process_batch(buf)
-            pbar.update(len(buf))
+                profiled_examples += len(buf)
+        finally:
+            pbar.close()
 
     finally:
         eng.detach_hooks()
         torch.cuda.empty_cache()
 
     suffix = "bucketed" if bucket_edges is not None else "global"
-    count_str = f"n{n_samples}" if n_samples is not None else "full"
-    filename = f"telemetry_{dataset_key}_{split}_{count_str}_{run_name}_{suffix}.pt"
+    count_str = f"n{selected_n}" if n_samples is not None else "full"
+    filename = f"telemetry_{dataset_key}_{target_split}_{count_str}_{run_name}_{suffix}.pt"
     pt_path = os.path.join(output_dir, filename)
 
     payload = {
         "meta": {
             "dataset": dataset_key,
+            "split": target_split,
             "seed": seed,
-            "n_samples": n_samples if n_samples is not None else len(raw_ds),
+            "n_requested": n_samples,
+            "n_samples": profiled_examples,
+            "n_selected": selected_n,
+            "n_skipped_short": skipped_short,
             "seq_len": seq_len,
             "layers": eng.num_layers,
             "experts": eng.num_experts,

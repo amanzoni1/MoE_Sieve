@@ -1,7 +1,11 @@
 from . import gsm8k
+from . import wikitext
+from . import alpaca
 
 EVAL_TASKS = {
     "gsm8k": gsm8k,
+    "wikitext": wikitext,
+    "alpaca": alpaca,
 }
 
 def get_task(name: str):

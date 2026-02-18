@@ -21,6 +21,20 @@ def _parse_hotk(run_name: str) -> Optional[int]:
     return int(match.group(1))
 
 
+def _detect_dataset(row: Dict) -> Optional[str]:
+    """Detect dataset from summary JSON metadata."""
+    return row.get("dataset", None)
+
+
+def _detect_metric(row: Dict) -> Tuple[str, str]:
+    """Return (metric_key, metric_label) based on what's in the summary."""
+    if "acc" in row:
+        return "acc", "accuracy"
+    if "perplexity" in row:
+        return "perplexity", "perplexity"
+    return "acc", "accuracy"  # fallback
+
+
 def _load_summaries(input_dir: str, pattern: str) -> List[Dict]:
     files = glob.glob(os.path.join(input_dir, pattern))
     rows = []
@@ -39,6 +53,7 @@ def _filter_rows(
     rows: List[Dict],
     seeds: Optional[List[int]],
     ks: Optional[List[int]],
+    dataset: Optional[str] = None,
 ) -> List[Dict]:
     out = []
     for r in rows:
@@ -48,6 +63,8 @@ def _filter_rows(
         if seeds is not None and seed not in seeds:
             continue
         if ks is not None and hotk not in ks:
+            continue
+        if dataset is not None and r.get("dataset") != dataset:
             continue
         r["_seed"] = seed
         r["_hotk"] = hotk
@@ -88,34 +105,8 @@ def _t_critical_95(df: int) -> float:
     return 1.96
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input_dir", default="./eval_results")
-    parser.add_argument("--pattern", default="*_summary.json")
-    parser.add_argument("--seeds", default=None, help="Comma-separated list, e.g. 42,99,123")
-    parser.add_argument("--ks", default=None, help="Comma-separated list, e.g. 4,8,12,16")
-    parser.add_argument("--show_seeds", action="store_true")
-    parser.add_argument("--extended", action="store_true", help="Show variance, SE, CI95, min/max per k")
-    parser.add_argument("--out", default=None, help="Write report to this file (e.g., ./eval_results/summary.txt)")
-    args = parser.parse_args()
-
-    seeds = [int(x.strip()) for x in args.seeds.split(",")] if args.seeds else None
-    ks = [int(x.strip()) for x in args.ks.split(",")] if args.ks else None
-
-    rows = _load_summaries(args.input_dir, args.pattern)
-    rows = _filter_rows(rows, seeds=seeds, ks=ks)
-
-    if not rows:
-        print(f"No summary files found in {args.input_dir} (pattern: {args.pattern}).")
-        return
-
-    by_k: Dict[int, List[Dict]] = {}
-    for r in rows:
-        k = r.get("_hotk")
-        if k is None:
-            continue
-        by_k.setdefault(k, []).append(r)
-
+def _format_accuracy_table(by_k, args) -> List[str]:
+    """Format table for accuracy-based tasks (GSM8K)."""
     lines = []
     lines.append("k | n | mean_acc | std_acc")
     lines.append("--|---|----------|--------")
@@ -142,8 +133,93 @@ def main():
                 f"s{r.get('_seed', 'na')}={float(r.get('acc', 0.0)):.4f}" for r in by_k[k]
             )
             lines.append(f"  seeds: {seed_str}")
+    return lines
 
-    report = "\n".join(lines)
+
+def _format_perplexity_table(by_k, args) -> List[str]:
+    """Format table for perplexity-based tasks (WikiText, Alpaca)."""
+    lines = []
+    lines.append("k | n | mean_ppl | std_ppl")
+    lines.append("--|---|----------|--------")
+    for k in sorted(by_k.keys()):
+        ppls = [float(r.get("perplexity", 0.0)) for r in by_k[k]]
+        mean_ppl, std_ppl = _mean_std(ppls)
+        var_ppl = _variance(ppls)
+        n = len(ppls)
+        se_ppl = std_ppl / (n ** 0.5) if n > 0 else float("nan")
+        tcrit = _t_critical_95(n - 1)
+        ci_half = tcrit * se_ppl if n > 1 else 0.0
+        ci_low = mean_ppl - ci_half
+        ci_high = mean_ppl + ci_half
+        min_ppl = min(ppls) if ppls else float("nan")
+        max_ppl = max(ppls) if ppls else float("nan")
+
+        lines.append(f"{k} | {len(ppls)} | {mean_ppl:.4f} | {std_ppl:.4f}")
+        if args.extended:
+            lines.append(
+                f"  var={var_ppl:.6f}  se={se_ppl:.4f}  ci95=[{ci_low:.4f}, {ci_high:.4f}]  min={min_ppl:.4f}  max={max_ppl:.4f}"
+            )
+        if args.show_seeds:
+            seed_str = ", ".join(
+                f"s{r.get('_seed', 'na')}={float(r.get('perplexity', 0.0)):.4f}" for r in by_k[k]
+            )
+            lines.append(f"  seeds: {seed_str}")
+    return lines
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Summarize eval results across seeds/k-values. Auto-detects metric type."
+    )
+    parser.add_argument("--input_dir", default="./eval_results")
+    parser.add_argument("--pattern", default="*_summary.json")
+    parser.add_argument("--seeds", default=None, help="Comma-separated list, e.g. 42,99,123")
+    parser.add_argument("--ks", default=None, help="Comma-separated list, e.g. 4,8,12,16")
+    parser.add_argument("--dataset", default=None, help="Filter by dataset name (gsm8k, wikitext, alpaca)")
+    parser.add_argument("--show_seeds", action="store_true")
+    parser.add_argument("--extended", action="store_true", help="Show variance, SE, CI95, min/max per k")
+    parser.add_argument("--out", default=None, help="Write report to this file (e.g., ./eval_results/summary.txt)")
+    args = parser.parse_args()
+
+    seeds = [int(x.strip()) for x in args.seeds.split(",")] if args.seeds else None
+    ks = [int(x.strip()) for x in args.ks.split(",")] if args.ks else None
+
+    rows = _load_summaries(args.input_dir, args.pattern)
+    rows = _filter_rows(rows, seeds=seeds, ks=ks, dataset=args.dataset)
+
+    if not rows:
+        print(f"No summary files found in {args.input_dir} (pattern: {args.pattern}).")
+        return
+
+    # Group by dataset, then by k
+    by_dataset: Dict[str, List[Dict]] = {}
+    for r in rows:
+        ds = r.get("dataset", "unknown")
+        by_dataset.setdefault(ds, []).append(r)
+
+    all_lines = []
+    for ds_name in sorted(by_dataset.keys()):
+        ds_rows = by_dataset[ds_name]
+        metric_key, metric_label = _detect_metric(ds_rows[0])
+
+        by_k: Dict[int, List[Dict]] = {}
+        for r in ds_rows:
+            k = r.get("_hotk")
+            if k is None:
+                continue
+            by_k.setdefault(k, []).append(r)
+
+        if not by_k:
+            continue
+
+        all_lines.append(f"\n## {ds_name} ({metric_label})\n")
+
+        if metric_key == "acc":
+            all_lines.extend(_format_accuracy_table(by_k, args))
+        else:
+            all_lines.extend(_format_perplexity_table(by_k, args))
+
+    report = "\n".join(all_lines)
     print(report)
 
     if args.out:

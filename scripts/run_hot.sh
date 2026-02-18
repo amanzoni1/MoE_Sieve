@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Usage:
 #   ./scripts/run_hot.sh <k> [seed] [project_dir]
-# Defaults: seed=42, project_dir=/workspace/HELLoRA_Project
+# Defaults: seed=42, project_dir=/workspace/MoE_Sieve_Experiments
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <k> [seed] [project_dir]"
@@ -12,7 +12,7 @@ fi
 
 K="$1"
 SEED="${2:-42}"
-PROJECT_DIR="${3:-/workspace/HELLoRA_Project}"
+PROJECT_DIR="${3:-/workspace/MoE_Sieve_Experiments}"
 
 cd "$PROJECT_DIR"
 

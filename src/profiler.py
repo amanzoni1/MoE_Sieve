@@ -207,8 +207,9 @@ class ProfilerEngine:
         if self._current_attn_mask is None:
             raise RuntimeError("Tokenizer output missing attention_mask")
 
-        self.model.eval()
-        with torch.inference_mode():
-            self.model(**inputs)
-
-        self._current_attn_mask = None
+        try:
+            self.model.eval()
+            with torch.inference_mode():
+                self.model(**inputs)
+        finally:
+            self._current_attn_mask = None
