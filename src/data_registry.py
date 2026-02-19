@@ -67,14 +67,30 @@ def fmt_spider(ex):
 # ═══════════════════════════════════════════════════════════════════
 
 DATASETS = {
-    # ── Datasets with training defaults ──────────────────────────
+    # ── Primary k-sweep anchors (cross-dataset experiments) ───────
     "gsm8k": {
         "path": "openai/gsm8k",
         "name": "main",
-        "split": "train",
+        "split": "train",              # 7,473 examples
         "text_fn": fmt_gsm8k,
-        "lr": 4e-4, "epochs": 3,
+        "lr": 4e-4, "epochs": 3,      # reference dataset — H=0.911
     },
+    "spider": {
+        "path": "spider",
+        "name": None,
+        "split": "train",              # 7,000 examples; eval on validation (1,034)
+        "text_fn": fmt_spider,
+        "lr": 4e-4, "epochs": 3,      # low-entropy anchor — H=0.874
+    },
+    "hellaswag": {
+        "path": "Rowan/hellaswag",
+        "name": None,
+        "split": "train",              # 39,905 examples; subsample to ~7,500 via --train_samples
+        "text_fn": fmt_hellaswag,
+        "lr": 4e-4, "epochs": 3,      # high-entropy anchor — H=0.966
+    },
+
+    # ── Profiling-only datasets ─────────────
     "alpaca": {
         "path": "sahil2801/CodeAlpaca-20k",
         "name": None,
@@ -90,24 +106,11 @@ DATASETS = {
         "lr": 4e-4, "epochs": 1,
     },
 
-    # ── Additional datasets (no training defaults yet) ───────────
-    "pubmedqa": {
-        "path": "qiaojin/PubMedQA",
-        "name": "pqa_artificial",       # 211k examples, richest split
-        "split": "train",
-        "text_fn": fmt_pubmedqa,
-    },
-    "mbpp": {
-        "path": "google-research-datasets/mbpp",
-        "name": "full",
-        "split": "train",
-        "text_fn": fmt_mbpp,
-    },
-    "arc_challenge": {
-        "path": "allenai/ai2_arc",
-        "name": "ARC-Challenge",
-        "split": "train",
-        "text_fn": fmt_arc,
+    "mmlu": {
+        "path": "cais/mmlu",
+        "name": "all",
+        "split": "test",               # MMLU "test" is the standard eval split — H=0.974
+        "text_fn": fmt_mmlu,
     },
     "boolq": {
         "path": "google/boolq",
@@ -115,30 +118,29 @@ DATASETS = {
         "split": "train",
         "text_fn": fmt_boolq,
     },
+    "pubmedqa": {
+        "path": "qiaojin/PubMedQA",
+        "name": "pqa_artificial",       # 211k examples, richest split
+        "split": "train",
+        "text_fn": fmt_pubmedqa,
+    },
+    "arc_challenge": {
+        "path": "allenai/ai2_arc",
+        "name": "ARC-Challenge",
+        "split": "train",
+        "text_fn": fmt_arc,
+    },
     "piqa": {
         "path": "lighteval/piqa",
         "name": None,
         "split": "train",
         "text_fn": fmt_piqa,
     },
-    "hellaswag": {
-        "path": "Rowan/hellaswag",
-        "name": None,
+    "mbpp": {
+        "path": "google-research-datasets/mbpp",
+        "name": "full",
         "split": "train",
-        "text_fn": fmt_hellaswag,
-    },
-    "mmlu": {
-        "path": "cais/mmlu",
-        "name": "all",
-        "split": "test",               # MMLU "test" is the standard eval split
-        "text_fn": fmt_mmlu,
-    },
-    "spider": {
-        "path": "spider",
-        "name": None,
-        "split": "train",              # 7,000 examples; eval on validation (1,034)
-        "text_fn": fmt_spider,
-        "lr": 4e-4, "epochs": 3,      # same defaults as gsm8k — similar dataset size
+        "text_fn": fmt_mbpp,
     },
 }
 
