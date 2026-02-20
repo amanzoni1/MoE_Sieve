@@ -112,7 +112,9 @@ class ProfilerEngine:
                 raise RuntimeError("attention_mask not set; cannot mask padding.")
 
             B, S = self._current_attn_mask.shape
-            m = self._current_attn_mask.to(torch.bool)  # [B,S]
+            # In multi-GPU device_map="auto" runs, different layers can execute
+            # on different CUDA devices. Keep mask on the same device as logits.
+            m = self._current_attn_mask.to(device=logits.device, dtype=torch.bool)  # [B,S]
 
             # NEW: safer universal flattening (still supports 2D or 3D logits)
             if logits.dim() == 3:
@@ -156,7 +158,7 @@ class ProfilerEngine:
 
             else:
                 # bucket by token position
-                pos = torch.arange(S, device=self._current_attn_mask.device).view(1, S).expand(B, S)  # [B,S]
+                pos = torch.arange(S, device=logits.device).view(1, S).expand(B, S)  # [B,S]
                 pos2d = pos[m]  # [N]
 
                 for bi in range(self.num_buckets):
