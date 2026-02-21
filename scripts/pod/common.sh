@@ -64,6 +64,7 @@ setup_spider_assets() {
   local need_nltk="${3:-0}"
   local tables_json="${ts_repo}/tables.json"
   local db_dir="${ts_repo}/database"
+  local have_db_files=0
 
   if [[ ! -d "$ts_repo" ]]; then
     log "Cloning Spider test-suite evaluator into $ts_repo ..."
@@ -80,14 +81,22 @@ setup_spider_assets() {
     mkdir -p /tmp/spider_data
     python3 -m zipfile -e /tmp/spider_data.zip /tmp/spider_data
     cp /tmp/spider_data/spider/tables.json "$tables_json"
+    rm -rf /tmp/spider_data/__MACOSX
   fi
 
   if [[ "$need_database" -eq 1 ]]; then
-    if [[ ! -d "$db_dir" ]] || [[ -z "$(ls -A "$db_dir" 2>/dev/null || true)" ]]; then
+    if [[ -d "$db_dir" ]] && find "$db_dir" -type f \( -name "*.sqlite" -o -name "*.db" \) ! -name "._*" ! -path "*/__MACOSX/*" -print -quit | grep -q .; then
+      have_db_files=1
+    fi
+    if [[ "$have_db_files" -eq 0 ]]; then
       command -v gdown >/dev/null 2>&1 || die "gdown is required to fetch Spider test-suite databases. Install deps or provide assets manually."
       log "Downloading Spider official test-suite databases ..."
       gdown --fuzzy "https://drive.google.com/file/d/1mkCx2GOFIqNesD4y8TDAO1yX1QZORP5w/view?usp=sharing" -O /tmp/testsuitedatabases.zip
       python3 -m zipfile -e /tmp/testsuitedatabases.zip "$ts_repo"
+      rm -rf "${ts_repo}/__MACOSX"
+      if ! find "$db_dir" -type f \( -name "*.sqlite" -o -name "*.db" \) ! -name "._*" ! -path "*/__MACOSX/*" -print -quit | grep -q .; then
+        die "Spider database download/extract completed but no .sqlite/.db files were found under ${db_dir}"
+      fi
     fi
   fi
 
