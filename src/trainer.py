@@ -3,6 +3,7 @@ import os
 import json
 import shutil
 import time
+import inspect
 import torch
 from typing import Optional, Dict, List, Any
 
@@ -299,6 +300,10 @@ def run_training(
         report_to="wandb" if use_wandb_eff else "none",
         remove_unused_columns=True,
     )
+    # Keep HF Trainer/W&B config aligned with our effective dataset shuffle seed.
+    if "data_seed" in inspect.signature(TrainingArguments).parameters:
+        training_args_kwargs["data_seed"] = data_seed_eff
+
     args = TrainingArguments(**training_args_kwargs)
 
     trainer = Trainer(
