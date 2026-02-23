@@ -3,6 +3,7 @@ import os
 import json
 import shutil
 import time
+import inspect
 import torch
 from typing import Optional, Dict, List, Any
 
@@ -283,7 +284,7 @@ def run_training(
     )
 
     # Training Arguments
-    training_args_kwargs = dict(
+    args = TrainingArguments(
         output_dir=out_dir,
         seed=seed_eff,
         per_device_train_batch_size=bs_eff,
@@ -299,7 +300,9 @@ def run_training(
         report_to="wandb" if use_wandb_eff else "none",
         remove_unused_columns=True,
     )
-    args = TrainingArguments(**training_args_kwargs)
+    # Keep HF Trainer config aligned with our effective dataset shuffle seed.
+    if "data_seed" in inspect.signature(TrainingArguments).parameters:
+        args.data_seed = data_seed_eff
 
     trainer = Trainer(
         model=model,
