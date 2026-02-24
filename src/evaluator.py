@@ -62,6 +62,8 @@ def _infer_selection_mode_from_adapter(adapter: Optional[str]) -> Optional[str]:
         return "full"
     if re.search(r"rand(?:om)?[_-]?k\d+", name):
         return "random"
+    if re.search(r"(?:^|[_-])(?:dyn[_-]?)?cov\d+(?:p\d+)?(?:$|[_-])", name):
+        return "dyn"
     if re.search(r"hot[_-]?k\d+", name):
         return "hot"
     return None
@@ -79,6 +81,16 @@ def _infer_k_from_adapter(adapter: Optional[str]) -> Optional[int]:
     return int(match.group(1))
 
 
+def _infer_cov_tag_from_adapter(adapter: Optional[str]) -> Optional[str]:
+    if not adapter:
+        return None
+    name = _strip_hub_prefix(adapter)
+    match = re.search(r"(?:^|[_-])(?:dyn[_-]?)?cov(\d+(?:p\d+)?)(?:$|[_-])", name)
+    if not match:
+        return None
+    return match.group(1)
+
+
 def _infer_model_tag(model_id: str) -> str:
     model_name = model_id.split("/")[-1]
     model_tag = model_name.split("-")[0] if "-" in model_name else model_name
@@ -93,6 +105,7 @@ def infer_run_name(
     model_tag = _infer_model_tag(model_id)
     seed = _infer_model_seed_from_adapter(adapter)
     k = _infer_k_from_adapter(adapter)
+    cov_tag = _infer_cov_tag_from_adapter(adapter)
     selection = _infer_selection_mode_from_adapter(adapter)
 
     run_name = f"{model_tag}_{task_name}"
@@ -102,6 +115,8 @@ def infer_run_name(
         run_name += "_full_lora"
     elif selection == "random" and k is not None:
         run_name += f"_randk{k}"
+    elif selection == "dyn" and cov_tag is not None:
+        run_name += f"_cov{cov_tag}"
     elif k is not None:
         run_name += f"_hotk{k}"
     return run_name

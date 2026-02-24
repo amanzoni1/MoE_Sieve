@@ -1,7 +1,7 @@
 import os
 import json
 import random
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 
 # Target Name Generators (OLMoE/Mixtral specific)
@@ -54,8 +54,13 @@ def load_hotmap(json_path: str) -> Dict[str, List[int]]:
         raise FileNotFoundError(f"Hotmap file not found: {json_path}")
     with open(json_path, "r") as f:
         data = json.load(f)
-    # Ensure keys are strings for consistency
-    return {str(k): v for k, v in data.items()}
+    # Ensure keys are strings and expert ids are int lists for consistency.
+    norm: Dict[str, List[int]] = {}
+    for k, v in data.items():
+        if not isinstance(v, list):
+            raise ValueError(f"Hotmap layer '{k}' must map to a list of expert ids.")
+        norm[str(k)] = [int(x) for x in v]
+    return norm
 
 def infer_hot_k(hotmap_json: Optional[str]) -> Optional[int]:
     """Reads the hotmap to find the K value (e.g., 8, 16)."""
@@ -63,9 +68,31 @@ def infer_hot_k(hotmap_json: Optional[str]) -> Optional[int]:
         return None
     try:
         hm = load_hotmap(hotmap_json)
-        # Check the first layer to guess K
-        first_layer_experts = next(iter(hm.values()))
-        return len(first_layer_experts)
+        if not hm:
+            return None
+        k_set = {len(experts) for experts in hm.values()}
+        return next(iter(k_set)) if len(k_set) == 1 else None
+    except Exception:
+        return None
+
+
+def infer_hotmap_stats(hotmap_json: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not hotmap_json:
+        return None
+    try:
+        hm = load_hotmap(hotmap_json)
+        if not hm:
+            return None
+        ks = [len(v) for v in hm.values()]
+        active_slots = sum(ks)
+        return {
+            "layers": len(ks),
+            "active_slots": active_slots,
+            "k_min": min(ks),
+            "k_max": max(ks),
+            "k_mean": float(active_slots) / float(len(ks)),
+            "k_uniform": len(set(ks)) == 1,
+        }
     except Exception:
         return None
 
@@ -133,8 +160,8 @@ def get_targets(
     The Master Function.
     Args:
         model: The HF model object (to read config/layers)
-        mode: 'hot' or 'full'
-        hotmap_json: Path to .json file (required if mode='hot')
+        mode: 'hot', 'dyn', 'random', or 'full'
+        hotmap_json: Path to .json file (required if mode in {'hot','dyn'})
     """
     # Auto-detect architecture stats
     if hasattr(model, "model"):
@@ -162,9 +189,9 @@ def get_targets(
 
     # Add Experts based on Mode
 
-    if mode == "hot":
+    if mode in ("hot", "dyn"):
         if not hotmap_json:
-            raise ValueError("Mode 'hot' requires a valid 'hotmap_json' path.")
+            raise ValueError(f"Mode '{mode}' requires a valid 'hotmap_json' path.")
 
         hot_map = load_hotmap(hotmap_json)
         expert_targets = targets_hot_experts(hot_map)
@@ -172,7 +199,10 @@ def get_targets(
 
         print(f"   + Attention targets: {len(attn_targets)}")
         print(f"   + Router gate targets: {len(gate_targets)}")
-        print(f"   + Expert targets (HOT): {len(expert_targets)}")
+        if mode == "dyn":
+            print(f"   + Expert targets (DYN): {len(expert_targets)}")
+        else:
+            print(f"   + Expert targets (HOT): {len(expert_targets)}")
 
         # Hotmap intent stats (based on JSON content)
         total_slots = num_layers * num_experts

@@ -14,6 +14,9 @@ TELEMETRY_PATH=""
 HOTMAP_DIR="${REPO_ROOT}/outputs/hotmaps"
 HOTMAP_MODE="counts"
 HOTMAP_SOURCE="auto"
+COVERAGE_PCT="60"
+COVERAGE_MIN_K=""
+COVERAGE_MAX_K=""
 RANDOM_SELECTOR_OFFSET=0
 RUN_FULL=1
 PIP_INSTALL=1
@@ -32,14 +35,18 @@ Usage: bash scripts/pod/train_pod.sh [options] [-- extra args for scripts.run]
 Options:
   --task <name>                 Dataset key (default: ${TASK})
   --model-tag <tag>             Model tag for run names (default: ${MODEL_TAG})
-  --selection-mode <mode>       hot|random for k-sweep runs (default: ${SELECTION_MODE})
+  --selection-mode <mode>       hot|dyn|random (default: ${SELECTION_MODE})
   --seeds <csv>                 Training seeds as comma-list (default: ${SEEDS_CSV})
-  --ks <csv>                    Hot-k values as comma-list (default: ${KS_CSV})
+  --ks <csv>                    k values as comma-list (default: ${KS_CSV}; ignored for mode=dyn)
   --data-seed <int>             Dataset shuffle seed (default: model seed)
   --telemetry <path>            Explicit telemetry .pt path
   --hotmap-source <mode>        auto|hotmap|telemetry (default: ${HOTMAP_SOURCE})
   --hotmap-dir <path>           Hotmap output dir (default: outputs/hotmaps)
   --hotmap-mode <counts|mass>   Hotmap metric (default: ${HOTMAP_MODE})
+  --coverage-pct <float>        Coverage percent for mode=dyn (default: ${COVERAGE_PCT})
+  --cov <float>                 Alias for --coverage-pct
+  --coverage-min-k <int>        Optional min per-layer k clamp in mode=dyn
+  --coverage-max-k <int>        Optional max per-layer k clamp in mode=dyn
   --random-selector-offset <n>  random_seed = model_seed + n (default: ${RANDOM_SELECTOR_OFFSET})
   --no-full                     Skip full-LoRA run
   --no-pip-install              Skip dependency install
@@ -65,6 +72,10 @@ while [[ $# -gt 0 ]]; do
     --hotmap-source) HOTMAP_SOURCE="$2"; shift 2 ;;
     --hotmap-dir) HOTMAP_DIR="$2"; shift 2 ;;
     --hotmap-mode) HOTMAP_MODE="$2"; shift 2 ;;
+    --coverage-pct) COVERAGE_PCT="$2"; shift 2 ;;
+    --cov) COVERAGE_PCT="$2"; shift 2 ;;
+    --coverage-min-k) COVERAGE_MIN_K="$2"; shift 2 ;;
+    --coverage-max-k) COVERAGE_MAX_K="$2"; shift 2 ;;
     --random-selector-offset) RANDOM_SELECTOR_OFFSET="$2"; shift 2 ;;
     --no-full) RUN_FULL=0; shift ;;
     --no-pip-install) PIP_INSTALL=0; shift ;;
@@ -111,11 +122,11 @@ if [[ "$USE_WANDB" -eq 1 ]]; then
 fi
 
 case "$SELECTION_MODE" in
-  hot|random) ;;
-  *) die "Invalid --selection-mode '${SELECTION_MODE}' (expected hot|random)" ;;
+  hot|dyn|random) ;;
+  *) die "Invalid --selection-mode '${SELECTION_MODE}' (expected hot|dyn|random)" ;;
 esac
 
-if [[ "$SELECTION_MODE" == "hot" ]]; then
+if [[ "$SELECTION_MODE" == "hot" || "$SELECTION_MODE" == "dyn" ]]; then
   case "$HOTMAP_SOURCE" in
     auto|hotmap|telemetry) ;;
     *) die "Invalid --hotmap-source '${HOTMAP_SOURCE}' (expected auto|hotmap|telemetry)" ;;
@@ -131,14 +142,76 @@ if [[ "$SELECTION_MODE" == "hot" ]]; then
   fi
 fi
 
+if [[ "$SELECTION_MODE" == "dyn" ]]; then
+  if [[ -z "${COVERAGE_PCT}" ]]; then
+    die "mode=dyn requires --coverage-pct (or --cov)"
+  fi
+fi
+
 mkdir -p "$HOTMAP_DIR"
 
 split_csv "$KS_CSV" KS
 split_csv "$SEEDS_CSV" SEEDS
 
 for seed in "${SEEDS[@]}"; do
+  if [[ "$SELECTION_MODE" == "dyn" ]]; then
+    cov_tag="$(printf '%s' "$COVERAGE_PCT" | sed 's/[[:space:]]//g; s/\.0*$//; s/\.$//; s/\./p/g')"
+    hotmap_cov_path="$(ls -t "${HOTMAP_DIR}"/*"${TASK}"*"_hotmap"*"_cov"*".json" 2>/dev/null | head -n 1 || true)"
+    cmd=(
+      python3 -m scripts.run
+      --task "$TASK"
+      --mode dyn
+      --model_tag "$MODEL_TAG"
+      --seed "$seed"
+      -cov "$COVERAGE_PCT"
+      --hotmap_mode "$HOTMAP_MODE"
+    )
+    if [[ -n "$DATA_SEED" ]]; then
+      cmd+=(--data_seed "$DATA_SEED")
+    fi
+    if [[ -n "$COVERAGE_MIN_K" ]]; then
+      cmd+=(--coverage_min_k "$COVERAGE_MIN_K")
+    fi
+    if [[ -n "$COVERAGE_MAX_K" ]]; then
+      cmd+=(--coverage_max_k "$COVERAGE_MAX_K")
+    fi
+
+    if [[ "$HOTMAP_SOURCE" == "hotmap" ]]; then
+      [[ -n "$hotmap_cov_path" ]] || die "No coverage hotmap found for task='${TASK}' in '${HOTMAP_DIR}'"
+      cmd+=(--hotmap "$hotmap_cov_path")
+    elif [[ "$HOTMAP_SOURCE" == "telemetry" ]]; then
+      [[ -n "$TELEMETRY_PATH" ]] || die "Telemetry mode selected but no telemetry file was provided/found."
+      cmd+=(--telemetry "$TELEMETRY_PATH")
+    else
+      if [[ -n "$hotmap_cov_path" ]]; then
+        cmd+=(--hotmap "$hotmap_cov_path")
+      elif [[ -n "$TELEMETRY_PATH" ]]; then
+        cmd+=(--telemetry "$TELEMETRY_PATH")
+      else
+        die "Auto mode: no prebuilt coverage hotmap in '${HOTMAP_DIR}' and no telemetry file found."
+      fi
+    fi
+
+    if [[ "$PUSH_TO_HUB" -eq 0 ]]; then
+      cmd+=(--no_push_to_hub)
+    elif [[ -n "$HUB_REPO_PREFIX" ]]; then
+      cmd+=(--hub_repo "${HUB_REPO_PREFIX}${MODEL_TAG}_${TASK}_s${seed}_cov${cov_tag}")
+    fi
+    if [[ "$CLEANUP_AFTER_PUSH" -eq 1 ]]; then
+      cmd+=(--cleanup_after_push)
+    fi
+    if [[ "$USE_WANDB" -eq 0 ]]; then
+      cmd+=(--no_wandb)
+    fi
+    cmd+=("${EXTRA_RUN_ARGS[@]}")
+
+    log "Launching DYN: seed=${seed}, coverage=${COVERAGE_PCT}%, source=${HOTMAP_SOURCE}"
+    "${cmd[@]}"
+    continue
+  fi
+
   for k in "${KS[@]}"; do
-    hotmap_path="$(ls -t "${HOTMAP_DIR}"/*"${TASK}"*"_hotmap_k${k}.json" 2>/dev/null | head -n 1 || true)"
+    hotmap_path="$(ls -t "${HOTMAP_DIR}"/*"${TASK}"*"_hotmap"*"_k${k}.json" 2>/dev/null | head -n 1 || true)"
     cmd=(
       python3 -m scripts.run
       --task "$TASK"
@@ -154,17 +227,18 @@ for seed in "${SEEDS[@]}"; do
       random_selector_seed=$((seed + RANDOM_SELECTOR_OFFSET))
       cmd+=(--random_seed "$random_selector_seed")
     else
+      cmd+=(--hotmap_mode "$HOTMAP_MODE")
       if [[ "$HOTMAP_SOURCE" == "hotmap" ]]; then
         [[ -n "$hotmap_path" ]] || die "No hotmap found for task='${TASK}' k='${k}' in '${HOTMAP_DIR}'"
         cmd+=(--hotmap "$hotmap_path")
       elif [[ "$HOTMAP_SOURCE" == "telemetry" ]]; then
         [[ -n "$TELEMETRY_PATH" ]] || die "Telemetry mode selected but no telemetry file was provided/found."
-        cmd+=(--telemetry "$TELEMETRY_PATH" --hotmap_mode "$HOTMAP_MODE")
+        cmd+=(--telemetry "$TELEMETRY_PATH")
       else
         if [[ -n "$hotmap_path" ]]; then
           cmd+=(--hotmap "$hotmap_path")
         elif [[ -n "$TELEMETRY_PATH" ]]; then
-          cmd+=(--telemetry "$TELEMETRY_PATH" --hotmap_mode "$HOTMAP_MODE")
+          cmd+=(--telemetry "$TELEMETRY_PATH")
         else
           die "Auto mode: no prebuilt hotmap in '${HOTMAP_DIR}' and no telemetry file found."
         fi

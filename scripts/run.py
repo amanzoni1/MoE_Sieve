@@ -1,17 +1,22 @@
 import argparse
 import os
 from huggingface_hub import HfApi
-from src.utils_profiling import build_hotmap
+from src.utils_profiling import build_hotmap, build_hotmap_by_coverage
 from src.trainer import run_training
 from src.data_registry import DATASETS
 from src.config import TRAIN_CFG
+
+
+def _coverage_tag(coverage_pct: float) -> str:
+    return f"{coverage_pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Experiment Launcher")
 
     # --- Essentials ---
     parser.add_argument("--task", type=str, required=True, choices=list(DATASETS.keys()))
-    parser.add_argument("--mode", type=str, default="hot", choices=["hot", "full", "random"])
+    parser.add_argument("--mode", type=str, default="hot", choices=["hot", "dyn", "full", "random"])
     parser.add_argument("--model_tag", type=str, default=None, help="Short model tag for names (e.g. olmoe)")
     parser.add_argument("--seed", type=int, default=None, help=f"Override ({TRAIN_CFG.seed})")
     parser.add_argument(
@@ -23,6 +28,13 @@ def main():
 
     # --- Hot Mode ---
     parser.add_argument("--k", type=int, default=16)
+    parser.add_argument(
+        "-cov",
+        "--coverage_pct",
+        type=float,
+        default=None,
+        help="Coverage target percent for mode=dyn (example: -cov 60).",
+    )
     parser.add_argument("--random_seed", type=int, default=None, help="Random expert selector seed (mode=random)")
     parser.add_argument("--telemetry", type=str, help="Path to telemetry .pt")
     parser.add_argument("--hotmap", type=str, help="Path to hotmap .json")
@@ -31,9 +43,21 @@ def main():
         "--hotmap_template",
         type=str,
         default=None,
-        help="Filename template with {k}, {task}, {seed}, {mode}. Example: telemetry_{task}_train_n7473_seed123_global_hotmap_counts_k{k}.json",
+        help="Filename template with {k}, {coverage_pct}, {task}, {seed}, {mode}.",
     )
     parser.add_argument("--hotmap_mode", type=str, default="counts", choices=["counts", "mass"])
+    parser.add_argument(
+        "--coverage_min_k",
+        type=int,
+        default=None,
+        help="Optional lower clamp for per-layer k in coverage mode.",
+    )
+    parser.add_argument(
+        "--coverage_max_k",
+        type=int,
+        default=None,
+        help="Optional upper clamp for per-layer k in coverage mode.",
+    )
 
     # --- Training Overrides (Default None = Use Registry/Config) ---
     parser.add_argument("--lr", type=float, default=None, help="Override Registry LR")
@@ -65,6 +89,22 @@ def main():
     args = parser.parse_args()
     seed_eff = args.seed if args.seed is not None else TRAIN_CFG.seed
 
+    if args.mode == "dyn":
+        if args.coverage_pct is None:
+            raise ValueError("mode='dyn' requires -cov/--coverage_pct")
+        if not (0.0 < args.coverage_pct <= 100.0):
+            raise ValueError(f"--coverage_pct must be in (0, 100], got {args.coverage_pct}")
+        if args.coverage_min_k is not None and args.coverage_min_k <= 0:
+            raise ValueError(f"--coverage_min_k must be > 0, got {args.coverage_min_k}")
+        if args.coverage_max_k is not None and args.coverage_max_k <= 0:
+            raise ValueError(f"--coverage_max_k must be > 0, got {args.coverage_max_k}")
+        if (
+            args.coverage_min_k is not None
+            and args.coverage_max_k is not None
+            and args.coverage_min_k > args.coverage_max_k
+        ):
+            raise ValueError("--coverage_min_k cannot exceed --coverage_max_k")
+
     if args.model_tag:
         model_tag = args.model_tag
     else:
@@ -73,6 +113,8 @@ def main():
 
     if args.mode == "hot":
         mode_tag = f"hotk{args.k}"
+    elif args.mode == "dyn":
+        mode_tag = f"cov{_coverage_tag(args.coverage_pct)}"
     elif args.mode == "random":
         mode_tag = f"randk{args.k}"
     else:
@@ -81,7 +123,7 @@ def main():
 
     # Hotmap
     hotmap_path = None
-    if args.mode == "hot":
+    if args.mode in ("hot", "dyn"):
         if args.hotmap:
             hotmap_path = args.hotmap
         elif args.hotmap_template:
@@ -89,15 +131,25 @@ def main():
                 task=args.task,
                 mode=args.mode,
                 k=args.k,
+                coverage_pct=args.coverage_pct,
                 seed=seed_eff,
                 model=model_tag,
                 run_name=run_name,
             )
             hotmap_path = os.path.join(args.hotmap_dir, hotmap_file) if args.hotmap_dir else hotmap_file
         elif args.telemetry:
-            hotmap_path = build_hotmap(args.telemetry, k=args.k, mode=args.hotmap_mode)
+            if args.mode == "dyn":
+                hotmap_path = build_hotmap_by_coverage(
+                    args.telemetry,
+                    coverage_pct=args.coverage_pct,
+                    mode=args.hotmap_mode,
+                    min_k=args.coverage_min_k,
+                    max_k=args.coverage_max_k,
+                )
+            else:
+                hotmap_path = build_hotmap(args.telemetry, k=args.k, mode=args.hotmap_mode)
         else:
-            raise ValueError("hot mode requires --hotmap or --telemetry")
+            raise ValueError(f"{args.mode} mode requires --hotmap, --hotmap_template, or --telemetry")
 
     # Hub repo resolution
     if args.push_to_hub:

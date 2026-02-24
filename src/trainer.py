@@ -24,7 +24,13 @@ except ImportError:
 
 from .config import SYS_CFG, TRAIN_CFG
 from .data_registry import DATASETS, load_and_format_dataset
-from .utils_training import get_targets, infer_hot_k, build_random_hotmap, full_target_sanity
+from .utils_training import (
+    get_targets,
+    infer_hot_k,
+    infer_hotmap_stats,
+    build_random_hotmap,
+    full_target_sanity,
+)
 
 
 # Helpers
@@ -105,12 +111,15 @@ def run_training(
     random_seed_eff = random_seed if random_seed is not None else seed_eff
     data_seed_eff = data_seed if data_seed is not None else seed_eff
 
-    if mode == "hot":
+    if mode in ("hot", "dyn"):
         hot_k = infer_hot_k(hotmap_json)
+        hotmap_stats = infer_hotmap_stats(hotmap_json)
     elif mode == "random":
         hot_k = random_k
+        hotmap_stats = None
     else:
         hot_k = None
+        hotmap_stats = None
 
     use_wandb_eff = use_wandb if use_wandb is not None else TRAIN_CFG.use_wandb
     project_eff = wandb_project if wandb_project is not None else TRAIN_CFG.wandb_project
@@ -128,6 +137,14 @@ def run_training(
     print(f"  mode:          {mode}")
     print(f"  hotmap_json:   {hotmap_json}")
     print(f"  hot_k:         {hot_k}")
+    if hotmap_stats is not None:
+        print(
+            "  hotmap_k:      "
+            f"min={hotmap_stats['k_min']}, "
+            f"mean={hotmap_stats['k_mean']:.2f}, "
+            f"max={hotmap_stats['k_max']}, "
+            f"uniform={hotmap_stats['k_uniform']}"
+        )
     if mode == "random":
         print(f"  random_seed:   {random_seed_eff}")
     print(f"  lr:            {lr_eff}")
@@ -143,28 +160,39 @@ def run_training(
 
     # W&B Init
     if use_wandb_eff and wandb is not None:
+        wandb_cfg = {
+            "model": TRAIN_CFG.model_id,
+            "dataset": dataset_key,
+            "run_name": run_name,
+            "mode": mode,
+            "seed": seed_eff,
+            "data_seed": data_seed_eff,
+            "max_len": max_len_eff,
+            "bs_per_device": bs_eff,
+            "grad_acc": grad_acc_eff,
+            "epochs": epochs_eff,
+            "learning_rate": lr_eff,
+            "lora_r": r_eff,
+            "lora_alpha": alpha_eff,
+            "dropout": dropout_eff,
+            "hotmap_path": hotmap_json,
+            "hot_k": hot_k,
+            "samples": train_samples or "full",
+        }
+        if hotmap_stats is not None:
+            wandb_cfg.update(
+                {
+                    "hotmap_k_min": hotmap_stats["k_min"],
+                    "hotmap_k_max": hotmap_stats["k_max"],
+                    "hotmap_k_mean": hotmap_stats["k_mean"],
+                    "hotmap_k_uniform": hotmap_stats["k_uniform"],
+                    "hotmap_active_slots": hotmap_stats["active_slots"],
+                }
+            )
         wandb.init(
             project=project_eff,
             name=run_name,
-            config={
-                "model": TRAIN_CFG.model_id,
-                "dataset": dataset_key,
-                "run_name": run_name,
-                "mode": mode,
-                "seed": seed_eff,
-                "data_seed": data_seed_eff,
-                "max_len": max_len_eff,
-                "bs_per_device": bs_eff,
-                "grad_acc": grad_acc_eff,
-                "epochs": epochs_eff,
-                "learning_rate": lr_eff,
-                "lora_r": r_eff,
-                "lora_alpha": alpha_eff,
-                "dropout": dropout_eff,
-                "hotmap_path": hotmap_json,
-                "hot_k": hot_k,
-                "samples": train_samples or "full"
-            }
+            config=wandb_cfg,
         )
 
     # Model & Tokenizer
@@ -264,6 +292,7 @@ def run_training(
             "lora": {"r": r_eff, "alpha": alpha_eff, "dropout": dropout_eff},
             "hotmap_json": hotmap_json,
             "hot_k": hot_k,
+            "hotmap_stats": hotmap_stats,
             "random_seed": random_seed_eff if mode == "random" else None,
             "train_samples": train_samples,
         },
