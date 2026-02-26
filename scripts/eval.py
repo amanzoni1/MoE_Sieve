@@ -15,6 +15,10 @@ def _parse_int_list(value: str) -> List[int]:
     return [int(x.strip()) for x in value.split(",") if x.strip()]
 
 
+def _parse_str_list(value: str) -> List[str]:
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True, choices=list(EVAL_TASKS.keys()))
@@ -22,16 +26,29 @@ def main():
 
     # Sweep options (optional)
     parser.add_argument("--model_seeds", default=None, help="Comma-separated list, e.g. 42,99,123")
-    parser.add_argument("--ks", default=None, help="Comma-separated list, e.g. 4,8,12,16")
+    sweep_group = parser.add_mutually_exclusive_group()
+    sweep_group.add_argument("--ks", default=None, help="Comma-separated hot-k list, e.g. 4,8,12,16")
+    sweep_group.add_argument(
+        "--coverages",
+        default=None,
+        help="Comma-separated coverage tags for cov adapters, e.g. 60,70,60p5",
+    )
     parser.add_argument(
         "--adapter_template",
         default=None,
-        help="Template with {seed} and {k}. Example: AManzoni/olmoe_gsm8k_s{seed}_hotk{k}",
+        help=(
+            "Template placeholders: {seed} plus either {k} (hot) or {coverage}/{cov} (dyn). "
+            "Examples: AManzoni/olmoe_gsm8k_s{seed}_hotk{k} | "
+            "AManzoni/olmoe_spider_s{seed}_cov{coverage}"
+        ),
     )
     parser.add_argument(
         "--run_name_template",
         default=None,
-        help="Optional template. Example: {model_tag}_{task}_s{seed}_hotk{k}",
+        help=(
+            "Optional template supporting {seed},{task},{model_tag},{k},{coverage},{cov}. "
+            "Example: {model_tag}_{task}_s{seed}_cov{coverage}"
+        ),
     )
     parser.add_argument("--dry_run", action="store_true")
 
@@ -42,20 +59,29 @@ def main():
 
     args = parser.parse_args()
 
-    sweep_requested = bool(args.adapter_template or args.model_seeds or args.ks)
+    sweep_requested = bool(args.adapter_template or args.model_seeds or args.ks or args.coverages)
     if sweep_requested:
-        if not (args.adapter_template and args.model_seeds and args.ks):
-            raise ValueError("Sweep requires --adapter_template, --model_seeds, and --ks")
+        if not (args.adapter_template and args.model_seeds and (args.ks or args.coverages)):
+            raise ValueError("Sweep requires --adapter_template, --model_seeds, and one of --ks/--coverages")
 
         model_tag = _infer_model_tag(args.model)
         model_seeds = _parse_int_list(args.model_seeds)
-        ks = _parse_int_list(args.ks)
+        if args.ks:
+            sweep_values = [str(k) for k in _parse_int_list(args.ks)]
+            sweep_kind = "k"
+        else:
+            sweep_values = _parse_str_list(args.coverages)
+            sweep_kind = "coverage"
+            if not sweep_values:
+                raise ValueError("--coverages must contain at least one value")
 
         for seed in model_seeds:
-            for k in ks:
+            for value in sweep_values:
                 adapter = args.adapter_template.format(
                     seed=seed,
-                    k=k,
+                    k=value,
+                    coverage=value,
+                    cov=value,
                     task=args.task,
                     model_tag=model_tag,
                 )
@@ -65,14 +91,17 @@ def main():
                         model_tag=model_tag,
                         task=args.task,
                         seed=seed,
-                        k=k,
+                        k=value,
+                        coverage=value,
+                        cov=value,
                     )
                 else:
                     run_name = None
 
                 if args.dry_run:
                     print(
-                        f"[DRY RUN] task={args.task} adapter={adapter} run_name={run_name or '<auto>'}"
+                        f"[DRY RUN] task={args.task} sweep={sweep_kind}:{value} "
+                        f"adapter={adapter} run_name={run_name or '<auto>'}"
                     )
                     continue
 
