@@ -244,7 +244,7 @@ class ProfilerEngine:
 
     def _get_hook(self, layer_idx: int):
         def hook(module, input, output):
-            logits = output[0] if isinstance(output, tuple) else output  # gate logits
+            logits = self._extract_gate_logits(module, input, output)
 
             if self._current_attn_mask is None:
                 raise RuntimeError("attention_mask not set; cannot mask padding.")
@@ -317,6 +317,70 @@ class ProfilerEngine:
                         self.data_buffer[layer_idx]["mass"][bi] += mass_b
 
         return hook
+
+    def _extract_gate_logits(self, module: Any, input: Any, output: Any) -> torch.Tensor:
+        """
+        Extract full router logits [B*S, E] or [B, S, E] from gate module hooks.
+
+        Some MoE implementations (e.g., DeepSeek variants) return top-k indices/weights
+        from the gate module instead of full logits. In that case we reconstruct logits
+        from gate weights and hidden states.
+        """
+        # 1) Try to find logits directly in output tensors.
+        candidates: List[torch.Tensor] = []
+        if torch.is_tensor(output):
+            candidates = [output]
+        elif isinstance(output, (tuple, list)):
+            candidates = [x for x in output if torch.is_tensor(x)]
+
+        for t in candidates:
+            if t.dim() >= 2 and int(t.shape[-1]) == int(self.num_experts):
+                return t
+
+        # 2) Reconstruct via linear weight if output is top-k only.
+        hidden_states = None
+        if isinstance(input, (tuple, list)) and len(input) > 0 and torch.is_tensor(input[0]):
+            hidden_states = input[0]
+        elif torch.is_tensor(input):
+            hidden_states = input
+
+        if hidden_states is None:
+            out_shapes = [tuple(x.shape) for x in candidates]
+            raise RuntimeError(
+                f"Could not extract gate logits for layer {layer_idx}: no tensor hidden-states in hook input. "
+                f"output_tensors={out_shapes}"
+            )
+
+        hs = hidden_states
+        if hs.dim() == 3:
+            hs2d = hs.reshape(-1, hs.shape[-1])
+        elif hs.dim() == 2:
+            hs2d = hs
+        else:
+            raise RuntimeError(
+                f"Could not extract gate logits for layer {layer_idx}: unexpected hidden state shape {tuple(hs.shape)}"
+            )
+
+        # Common case: gate module stores weight directly with shape [E, H].
+        w = getattr(module, "weight", None)
+        if torch.is_tensor(w) and w.dim() == 2 and int(w.shape[0]) == int(self.num_experts):
+            return F.linear(hs2d.to(dtype=w.dtype), w)
+
+        # Fallback: probe common nested linear projections.
+        for attr in ("gate", "gate_proj", "router", "wg"):
+            proj = getattr(module, attr, None)
+            if proj is None:
+                continue
+            w = getattr(proj, "weight", None)
+            b = getattr(proj, "bias", None)
+            if torch.is_tensor(w) and w.dim() == 2 and int(w.shape[0]) == int(self.num_experts):
+                return F.linear(hs2d.to(dtype=w.dtype), w, b)
+
+        out_shapes = [tuple(x.shape) for x in candidates]
+        raise RuntimeError(
+            f"Could not extract gate logits for layer {layer_idx}: output last-dim is not num_experts={self.num_experts} "
+            f"and no compatible gate weight was found. output_tensors={out_shapes}"
+        )
 
     def attach_hooks(self):
         self.detach_hooks()
