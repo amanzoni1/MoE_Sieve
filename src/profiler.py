@@ -47,15 +47,16 @@ class ProfilerEngine:
 
         self.num_layers = len(self.layers)
         self.gate_path = gate_path
+        self.profiled_layer_indices: List[int] = []
 
         # Gate module resolution
         if gate_getter is not None:
             self.gate_getter = gate_getter
         else:
-            self.gate_path = self.gate_path or self._auto_detect_gate_path(self.layers[0])
+            self.gate_path = self.gate_path or self._auto_detect_gate_path_any_layer()
             self.gate_getter = lambda layer: self._resolve_attr_path(layer, self.gate_path)
 
-        first_gate = self.gate_getter(self.layers[0])
+        first_gate = self._find_first_gate_module()
         gate_out_features = getattr(first_gate, "out_features", None)
 
         # Router cardinality (experts)
@@ -175,12 +176,38 @@ class ProfilerEngine:
             lname = name.lower()
             if not lname:
                 continue
+            # Skip FFN projection names; these are not MoE router gates.
+            if lname.endswith("gate_proj") or lname.endswith("up_proj") or lname.endswith("down_proj"):
+                continue
             if ("gate" in lname or "router" in lname) and hasattr(mod, "register_forward_hook"):
                 return name
 
         raise ValueError(
             "Could not auto-detect MoE gate module path. Pass gate_path explicitly "
             "(examples: 'mlp.gate', 'block_sparse_moe.gate')."
+        )
+
+    def _auto_detect_gate_path_any_layer(self) -> str:
+        for layer in self.layers:
+            try:
+                return self._auto_detect_gate_path(layer)
+            except Exception:
+                continue
+        raise ValueError(
+            "Could not auto-detect MoE gate module path on any layer. Pass gate_path explicitly "
+            "(examples: 'mlp.gate', 'block_sparse_moe.gate')."
+        )
+
+    def _find_first_gate_module(self) -> Any:
+        for layer in self.layers:
+            try:
+                gate = self.gate_getter(layer)
+                if hasattr(gate, "register_forward_hook"):
+                    return gate
+            except Exception:
+                continue
+        raise ValueError(
+            "Could not resolve a valid MoE gate module on any layer with current gate getter/path."
         )
 
     def _get_config_first_int(self, keys: List[str]) -> Optional[int]:
@@ -294,16 +321,25 @@ class ProfilerEngine:
     def attach_hooks(self):
         self.detach_hooks()
         self._init_buffer()
-        print(f"[Profiler] Attaching gate hooks to {self.num_layers} layers...")
+        self.profiled_layer_indices = []
+        print(f"[Profiler] Attaching gate hooks across {self.num_layers} layers...")
         for i, layer in enumerate(self.layers):
             try:
                 gate = self.gate_getter(layer)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to resolve gate module for layer {i} "
-                    f"(gate_path={self.gate_path}): {e}"
-                ) from e
+            except Exception:
+                # Mixed dense+MoE stacks may not expose a gate on every layer.
+                continue
             self.hooks.append(gate.register_forward_hook(self._get_hook(i)))
+            self.profiled_layer_indices.append(i)
+
+        if not self.profiled_layer_indices:
+            raise RuntimeError(
+                f"Failed to resolve gate module on any layer (gate_path={self.gate_path})."
+            )
+        print(
+            f"[Profiler] Hooked {len(self.profiled_layer_indices)}/{self.num_layers} "
+            f"layers: {self.profiled_layer_indices}"
+        )
 
     def detach_hooks(self):
         for h in self.hooks:
@@ -344,7 +380,10 @@ class ProfilerEngine:
         """
         layer_totals: List[int] = []
         token_totals: List[int] = []
-        for layer_idx in range(self.num_layers):
+        layer_indices = (
+            self.profiled_layer_indices if self.profiled_layer_indices else list(range(self.num_layers))
+        )
+        for layer_idx in layer_indices:
             layer_buf = self.data_buffer[layer_idx]
             counts = layer_buf["counts"]
             total_obj = layer_buf["total"]
@@ -442,7 +481,8 @@ class ProfilerEngine:
                 )
 
         return {
-            "layers_checked": self.num_layers,
+            "layers_checked": len(layer_indices),
+            "layer_indices_checked": list(layer_indices),
             "assignments_per_layer": layer_totals,
             "tokens_per_layer": token_totals,
             "renorm_topk_prob": self.renorm_topk_prob,

@@ -46,9 +46,32 @@ def _prepare_model_config(model_id: str):
     # DeepSeek remote code may expect rope_scaling["type"] while newer configs
     # provide rope_scaling["rope_type"].
     rope_scaling = getattr(cfg, "rope_scaling", None)
-    if isinstance(rope_scaling, dict) and "type" not in rope_scaling:
+    if isinstance(rope_scaling, dict):
         rope_scaling = dict(rope_scaling)
-        rope_scaling["type"] = rope_scaling.get("rope_type", "linear")
+
+        if "type" not in rope_scaling:
+            rope_scaling["type"] = rope_scaling.get("rope_type", "linear")
+
+        # Some DeepSeek remote-code versions hard-index `factor`.
+        # Keep a safe default when it is omitted by newer config schemas.
+        if "factor" not in rope_scaling:
+            factor = rope_scaling.get("scaling_factor", 1.0)
+            try:
+                factor = float(factor)
+            except Exception:
+                factor = 1.0
+            if factor < 1.0:
+                factor = 1.0
+            rope_scaling["factor"] = factor
+
+        # Normalise optional YaRN fields to float when present.
+        for key in ("beta_fast", "beta_slow"):
+            if key in rope_scaling:
+                try:
+                    rope_scaling[key] = float(rope_scaling[key])
+                except Exception:
+                    pass
+
         cfg.rope_scaling = rope_scaling
     return cfg
 
