@@ -127,14 +127,28 @@ def match_linear_modules_by_suffix(model, suffixes: List[str]):
     return matched
 
 
-def full_target_sanity(model, suffixes: List[str], num_layers: int, num_experts: int, lora_rank: int):
+def full_target_sanity(
+    model,
+    suffixes: List[str],
+    num_layers: int,
+    num_experts: int,
+    lora_rank: int,
+    strict: bool = True,
+):
     matched_linear_modules = match_linear_modules_by_suffix(model, suffixes)
     matched_count = len(matched_linear_modules)
-    expected_modules = expected_full_linear_module_count(num_layers, num_experts)
-    if matched_count != expected_modules:
-        raise RuntimeError(
-            f"Full-LoRA sanity check failed: matched {matched_count} modules, expected {expected_modules}. "
-            "This would break comparability."
+    expected_modules = None
+    if strict:
+        expected_modules = expected_full_linear_module_count(num_layers, num_experts)
+        if matched_count != expected_modules:
+            raise RuntimeError(
+                f"Full-LoRA sanity check failed: matched {matched_count} modules, expected {expected_modules}. "
+                "This would break comparability."
+            )
+    else:
+        print(
+            "[Full-LoRA sanity] Non-strict mode: skipping fixed expected module count "
+            f"(matched {matched_count})."
         )
 
     # LoRA trainable params per linear = r * (in_features + out_features) when bias='none'.

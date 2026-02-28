@@ -17,6 +17,12 @@ def main():
     # --- Essentials ---
     parser.add_argument("--task", type=str, required=True, choices=list(DATASETS.keys()))
     parser.add_argument("--mode", type=str, default="hot", choices=["hot", "dyn", "full", "random"])
+    parser.add_argument(
+        "--model_id",
+        type=str,
+        default=None,
+        help=f"Override base model id (default from config: {TRAIN_CFG.model_id})",
+    )
     parser.add_argument("--model_tag", type=str, default=None, help="Short model tag for names (e.g. olmoe)")
     parser.add_argument(
         "--run_name_suffix",
@@ -94,6 +100,7 @@ def main():
 
     args = parser.parse_args()
     seed_eff = args.seed if args.seed is not None else TRAIN_CFG.seed
+    model_id_eff = args.model_id if args.model_id else TRAIN_CFG.model_id
 
     if args.mode == "dyn":
         if args.coverage_pct is None:
@@ -114,7 +121,7 @@ def main():
     if args.model_tag:
         model_tag = args.model_tag
     else:
-        model_id = TRAIN_CFG.model_id.split("/")[-1]
+        model_id = model_id_eff.split("/")[-1]
         model_tag = model_id.split("-")[0].lower() if "-" in model_id else model_id.lower()
 
     if args.mode == "hot":
@@ -179,6 +186,7 @@ def main():
     # Launch
     print(f"Launching: {run_name}")
     run_training(
+        model_id=model_id_eff,
         dataset_key=args.task,
         run_name=run_name,
         mode=args.mode,

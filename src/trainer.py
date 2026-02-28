@@ -9,11 +9,13 @@ from typing import Optional, Dict, List, Any
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoConfig,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
     set_seed
 )
+import transformers.utils.import_utils as _tf_import_utils
 from peft import LoraConfig, get_peft_model
 from huggingface_hub import HfApi
 
@@ -31,6 +33,36 @@ from .utils_training import (
     build_random_hotmap,
     full_target_sanity,
 )
+
+
+def _prepare_remote_code_compat() -> None:
+    # Some remote model repos still import this helper from older transformers APIs.
+    if not hasattr(_tf_import_utils, "is_torch_fx_available"):
+        _tf_import_utils.is_torch_fx_available = lambda: hasattr(torch, "fx")
+
+
+def _prepare_model_config(model_id: str):
+    cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    rope_scaling = getattr(cfg, "rope_scaling", None)
+    if isinstance(rope_scaling, dict):
+        rope_scaling = dict(rope_scaling)
+        if "type" not in rope_scaling:
+            rope_scaling["type"] = rope_scaling.get("rope_type", "linear")
+        if "factor" not in rope_scaling:
+            factor = rope_scaling.get("scaling_factor", 1.0)
+            try:
+                factor = float(factor)
+            except Exception:
+                factor = 1.0
+            rope_scaling["factor"] = max(1.0, factor)
+        for key in ("beta_fast", "beta_slow"):
+            if key in rope_scaling:
+                try:
+                    rope_scaling[key] = float(rope_scaling[key])
+                except Exception:
+                    pass
+        cfg.rope_scaling = rope_scaling
+    return cfg
 
 
 # Helpers
@@ -61,6 +93,7 @@ def save_run_artifacts(
 def run_training(
     dataset_key: str,
     run_name: str,
+    model_id: Optional[str] = None,
     mode: str = "hot",
     hotmap_json: Optional[str] = None,
     random_k: Optional[int] = None,
@@ -85,6 +118,8 @@ def run_training(
     hub_private: bool = False,
     cleanup_after_push: bool = False,
 ):
+    model_id_eff = model_id if model_id is not None else TRAIN_CFG.model_id
+
     # Global Setup
     seed_eff = seed if seed is not None else TRAIN_CFG.seed
     set_seed(seed_eff)
@@ -129,7 +164,7 @@ def run_training(
 
     print("\n" + "=" * 80)
     print("RUN CONFIG")
-    print(f"  model_id:      {TRAIN_CFG.model_id}")
+    print(f"  model_id:      {model_id_eff}")
     print(f"  dataset:       {dataset_key}")
     print(f"  run_name:      {run_name}")
     print(f"  seed:          {seed_eff}")
@@ -161,7 +196,7 @@ def run_training(
     # W&B Init
     if use_wandb_eff and wandb is not None:
         wandb_cfg = {
-            "model": TRAIN_CFG.model_id,
+            "model": model_id_eff,
             "dataset": dataset_key,
             "run_name": run_name,
             "mode": mode,
@@ -196,17 +231,29 @@ def run_training(
         )
 
     # Model & Tokenizer
-    print(f"Loading Model: {TRAIN_CFG.model_id}...")
-    tokenizer = AutoTokenizer.from_pretrained(TRAIN_CFG.model_id, trust_remote_code=True)
+    print(f"Loading Model: {model_id_eff}...")
+    _prepare_remote_code_compat()
+    model_cfg = _prepare_model_config(model_id_eff)
+    tokenizer = AutoTokenizer.from_pretrained(model_id_eff, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        TRAIN_CFG.model_id,
-        dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-        trust_remote_code=True
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id_eff,
+            config=model_cfg,
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+            trust_remote_code=True
+        )
+    except Exception as e:
+        print(f"[Model Load] sdpa path failed ({e}); retrying without attn_implementation...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id_eff,
+            config=model_cfg,
+            dtype=torch.bfloat16,
+            trust_remote_code=True
+        )
 
     # IMPORTANT: cache should be OFF when using gradient checkpointing
     if TRAIN_CFG.gradient_checkpointing:
@@ -238,9 +285,13 @@ def run_training(
             num_layers=num_layers,
             num_experts=num_experts,
             lora_rank=r_eff,
+            strict=bool("olmoe" in model_id_eff.lower()),
         )
         print(f"   + Matched linear modules (FULL): {sanity['matched_count']}")
-        print(f"   + Expected LoRA trainable params (FULL): {sanity['expected_trainable_params']:,}")
+        if sanity["expected_modules"] is not None:
+            print(f"   + Expected LoRA trainable params (FULL): {sanity['expected_trainable_params']:,}")
+        else:
+            print(f"   + Expected LoRA trainable params (FULL): skipped (non-strict mode)")
         full_expected_trainable_params = sanity["expected_trainable_params"]
 
     random_hotmap = None
@@ -281,7 +332,7 @@ def run_training(
         run_cfg={
             "dataset": dataset_key,
             "mode": mode,
-            "model_id": TRAIN_CFG.model_id,
+            "model_id": model_id_eff,
             "seed": seed_eff,
             "data_seed": data_seed_eff,
             "max_len": max_len_eff,
