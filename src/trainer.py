@@ -422,7 +422,7 @@ def run_training(
         print(f"[HF] Pushed final_adapter to: {hub_repo}")
 
         # Upload small run artifacts
-        for fname in ("run_config.json", "targets.json", "hotmap_used.json"):
+        for fname in ("run_config.json", "targets.json", "hotmap_used.json", "hotmap_used.meta.json"):
             local_path = os.path.join(out_dir, fname)
             if os.path.exists(local_path):
                 api.upload_file(
