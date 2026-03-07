@@ -85,6 +85,9 @@ def save_run_artifacts(
     # Backup the Hotmap used
     if hotmap_json and os.path.exists(hotmap_json):
         shutil.copy(hotmap_json, os.path.join(out_dir, "hotmap_used.json"))
+        meta_src = hotmap_json[:-5] + ".meta.json" if hotmap_json.endswith(".json") else hotmap_json + ".meta.json"
+        if os.path.exists(meta_src):
+            shutil.copy(meta_src, os.path.join(out_dir, "hotmap_used.meta.json"))
     if random_hotmap is not None:
         with open(os.path.join(out_dir, "random_hotmap_used.json"), "w") as f:
             json.dump(random_hotmap, f, indent=2)

@@ -1,7 +1,8 @@
 import argparse
 import os
+import torch
 from huggingface_hub import HfApi
-from src.utils_profiling import build_hotmap, build_hotmap_by_coverage
+from src.utils_profiling import build_hotmap, build_hotmap_by_coverage, build_hotmap_by_budget
 from src.trainer import run_training
 from src.data_registry import DATASETS
 from src.config import TRAIN_CFG
@@ -11,12 +12,36 @@ def _coverage_tag(coverage_pct: float) -> str:
     return f"{coverage_pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
+def _budget_tag(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def _telemetry_num_experts(pt_path: str) -> int:
+    d = torch.load(pt_path, map_location="cpu")
+    meta = d.get("meta", {}) if isinstance(d, dict) else {}
+    n = meta.get("experts")
+    if isinstance(n, (int, float)) and int(n) > 0:
+        return int(n)
+    layer_keys = sorted(k for k in d.keys() if isinstance(k, int)) if isinstance(d, dict) else []
+    if not layer_keys:
+        raise ValueError(f"Could not infer experts from telemetry: {pt_path}")
+    first = d[layer_keys[0]]
+    t = first.get("counts")
+    if t is None:
+        raise ValueError(f"Telemetry layer missing counts: {pt_path}")
+    if t.dim() == 2:
+        return int(t.shape[1])
+    if t.dim() == 1:
+        return int(t.shape[0])
+    raise ValueError(f"Unsupported counts shape in telemetry: {tuple(t.shape)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Experiment Launcher")
 
     # --- Essentials ---
     parser.add_argument("--task", type=str, required=True, choices=list(DATASETS.keys()))
-    parser.add_argument("--mode", type=str, default="hot", choices=["hot", "dyn", "full", "random"])
+    parser.add_argument("--mode", type=str, default="hot", choices=["hot", "dyn", "budget", "full", "random"])
     parser.add_argument(
         "--model_id",
         type=str,
@@ -70,6 +95,24 @@ def main():
         default=None,
         help="Optional upper clamp for per-layer k in coverage mode.",
     )
+    parser.add_argument(
+        "--budget_per_layer",
+        type=float,
+        default=None,
+        help="Target average routed experts per layer for mode=budget (e.g. 15).",
+    )
+    parser.add_argument(
+        "--total_budget",
+        type=int,
+        default=None,
+        help="Exact total routed expert slots for mode=budget (overrides --budget_per_layer).",
+    )
+    parser.add_argument(
+        "--budget_frac",
+        type=float,
+        default=None,
+        help="Fraction of routed experts per layer for mode=budget (e.g. 0.25 or 25).",
+    )
 
     # --- Training Overrides (Default None = Use Registry/Config) ---
     parser.add_argument("--lr", type=float, default=None, help="Override Registry LR")
@@ -117,6 +160,59 @@ def main():
             and args.coverage_min_k > args.coverage_max_k
         ):
             raise ValueError("--coverage_min_k cannot exceed --coverage_max_k")
+    if args.mode == "budget":
+        has_prebuilt_hotmap = bool(args.hotmap or args.hotmap_template)
+        if (
+            args.total_budget is None
+            and args.budget_per_layer is None
+            and args.budget_frac is None
+            and not has_prebuilt_hotmap
+        ):
+            raise ValueError(
+                "mode='budget' requires one of --total_budget/--budget_per_layer/--budget_frac unless using --hotmap/--hotmap_template"
+            )
+        if args.budget_frac is not None and (args.total_budget is not None or args.budget_per_layer is not None):
+            raise ValueError("--budget_frac cannot be combined with --total_budget or --budget_per_layer")
+        if args.total_budget is not None and args.total_budget <= 0:
+            raise ValueError(f"--total_budget must be > 0, got {args.total_budget}")
+        if args.budget_per_layer is not None and args.budget_per_layer <= 0:
+            raise ValueError(f"--budget_per_layer must be > 0, got {args.budget_per_layer}")
+        if args.budget_frac is not None and args.budget_frac <= 0:
+            raise ValueError(f"--budget_frac must be > 0, got {args.budget_frac}")
+        if args.coverage_min_k is not None and args.coverage_min_k < 0:
+            raise ValueError(f"--coverage_min_k must be >= 0 in budget mode, got {args.coverage_min_k}")
+        if args.coverage_max_k is not None and args.coverage_max_k <= 0:
+            raise ValueError(f"--coverage_max_k must be > 0, got {args.coverage_max_k}")
+        if (
+            args.coverage_min_k is not None
+            and args.coverage_max_k is not None
+            and args.coverage_min_k > args.coverage_max_k
+        ):
+            raise ValueError("--coverage_min_k cannot exceed --coverage_max_k")
+        if args.coverage_min_k == 0:
+            print(
+                "⚠️  [Budget Mode] min_k=0 allows layers with zero routed expert adapters. "
+                "This is valid, but can be surprising; attention/router/shared adapters are still trained."
+            )
+
+    budget_per_layer_eff = args.budget_per_layer
+    total_budget_eff = args.total_budget
+    budget_frac_eff = args.budget_frac
+    if args.mode == "budget" and budget_frac_eff is not None:
+        if not args.telemetry:
+            raise ValueError("mode='budget' with --budget_frac requires --telemetry")
+        frac = float(budget_frac_eff)
+        if frac > 1.0:
+            frac = frac / 100.0
+        if not (0.0 < frac <= 1.0):
+            raise ValueError(f"--budget_frac must map to (0,1], got {budget_frac_eff}")
+        n_experts = _telemetry_num_experts(args.telemetry)
+        budget_per_layer_eff = frac * float(n_experts)
+        budget_frac_eff = frac
+        print(
+            f"[Budget Mode] Auto budget from fraction: routed_experts={n_experts}, "
+            f"budget_frac={frac:.4f} -> budget_per_layer={budget_per_layer_eff:.2f}"
+        )
 
     if args.model_tag:
         model_tag = args.model_tag
@@ -128,6 +224,15 @@ def main():
         mode_tag = f"hotk{args.k}"
     elif args.mode == "dyn":
         mode_tag = f"cov{_coverage_tag(args.coverage_pct)}"
+    elif args.mode == "budget":
+        if total_budget_eff is not None:
+            mode_tag = f"budget{total_budget_eff}"
+        elif budget_frac_eff is not None:
+            mode_tag = f"budgetp{_budget_tag(100.0 * budget_frac_eff)}"
+        elif budget_per_layer_eff is not None:
+            mode_tag = f"budgetk{_budget_tag(budget_per_layer_eff)}"
+        else:
+            mode_tag = "budget"
     elif args.mode == "random":
         mode_tag = f"randk{args.k}"
     else:
@@ -136,7 +241,7 @@ def main():
 
     # Hotmap
     hotmap_path = None
-    if args.mode in ("hot", "dyn"):
+    if args.mode in ("hot", "dyn", "budget"):
         if args.hotmap:
             hotmap_path = args.hotmap
         elif args.hotmap_template:
@@ -145,6 +250,9 @@ def main():
                 mode=args.mode,
                 k=args.k,
                 coverage_pct=args.coverage_pct,
+                budget_per_layer=budget_per_layer_eff,
+                total_budget=total_budget_eff,
+                budget_frac=budget_frac_eff,
                 seed=seed_eff,
                 model=model_tag,
                 run_name=run_name,
@@ -155,6 +263,15 @@ def main():
                 hotmap_path = build_hotmap_by_coverage(
                     args.telemetry,
                     coverage_pct=args.coverage_pct,
+                    mode=args.hotmap_mode,
+                    min_k=args.coverage_min_k,
+                    max_k=args.coverage_max_k,
+                )
+            elif args.mode == "budget":
+                hotmap_path = build_hotmap_by_budget(
+                    args.telemetry,
+                    budget_per_layer=budget_per_layer_eff,
+                    total_budget=total_budget_eff,
                     mode=args.hotmap_mode,
                     min_k=args.coverage_min_k,
                     max_k=args.coverage_max_k,
@@ -185,11 +302,12 @@ def main():
 
     # Launch
     print(f"Launching: {run_name}")
+    run_mode = "dyn" if args.mode == "budget" else args.mode
     run_training(
         model_id=model_id_eff,
         dataset_key=args.task,
         run_name=run_name,
-        mode=args.mode,
+        mode=run_mode,
         hotmap_json=hotmap_path,
         random_k=(args.k if args.mode == "random" else None),
         random_seed=args.random_seed,

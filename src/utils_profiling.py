@@ -1,8 +1,9 @@
 import os
 import json
+import heapq
 import torch
 from tqdm.auto import tqdm
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datasets import load_dataset
 
 from .config import SYS_CFG
@@ -149,9 +150,26 @@ def build_hotmap(
 
     hm: Dict[int, List[int]] = {}
 
+    per_layer_meta: List[Dict[str, Any]] = []
+    global_selected = 0.0
+    global_total = 0.0
     for layer_idx, data_tensor in layers.items():
         top_indices = torch.topk(data_tensor.float(), k=min(k, data_tensor.numel())).indices.tolist()
         hm[int(layer_idx)] = top_indices
+        scores = data_tensor.float()
+        total = float(scores.sum().item())
+        selected = float(scores[top_indices].sum().item()) if top_indices else 0.0
+        cov = (selected / total) if total > 0 else 0.0
+        global_selected += selected
+        global_total += total
+        per_layer_meta.append(
+            {
+                "layer": int(layer_idx),
+                "k": int(len(top_indices)),
+                "coverage": float(cov),
+                "selected_experts": [int(x) for x in top_indices],
+            }
+        )
 
     if out_json is None:
         dir_name = os.path.dirname(pt_path)
@@ -165,7 +183,35 @@ def build_hotmap(
     with open(out_json, "w") as f:
         json.dump({str(l): exps for l, exps in hm.items()}, f, indent=2)
 
+    ks = [len(v) for v in hm.values()]
+    coverages = [float(row["coverage"]) for row in per_layer_meta]
+    meta = {
+        "schema_version": 1,
+        "source_telemetry": pt_path,
+        "hotmap_json": out_json,
+        "method": "topk",
+        "score_mode": mode,
+        "constraints": {"k": int(k)},
+        "layers": int(len(ks)),
+        "k_stats": {
+            "min": int(min(ks)) if ks else 0,
+            "mean": float(sum(ks) / len(ks)) if ks else 0.0,
+            "max": int(max(ks)) if ks else 0,
+            "uniform": bool(len(set(ks)) == 1) if ks else True,
+            "total_slots": int(sum(ks)) if ks else 0,
+        },
+        "coverage_stats": {
+            "min": float(min(coverages)) if coverages else 0.0,
+            "mean": float(sum(coverages) / len(coverages)) if coverages else 0.0,
+            "max": float(max(coverages)) if coverages else 0.0,
+        },
+        "global_coverage": float(global_selected / global_total) if global_total > 0 else 0.0,
+        "per_layer": per_layer_meta,
+    }
+    meta_path = _write_hotmap_metadata(out_json, meta)
+
     print(f"Hotmap saved: {out_json}")
+    print(f"Hotmap metadata saved: {meta_path}")
     return out_json
 
 
@@ -201,6 +247,9 @@ def build_hotmap_by_coverage(
     k_values: List[int] = []
     target = coverage_pct / 100.0
 
+    per_layer_meta: List[Dict[str, Any]] = []
+    global_selected = 0.0
+    global_total = 0.0
     for layer_idx, data_tensor in layers.items():
         scores = data_tensor.float()
         num_experts = int(scores.numel())
@@ -225,6 +274,19 @@ def build_hotmap_by_coverage(
 
         hm[int(layer_idx)] = sorted(int(x) for x in picks)
         k_values.append(len(hm[int(layer_idx)]))
+        total = float(scores.sum().item())
+        selected = float(scores[hm[int(layer_idx)]].sum().item()) if hm[int(layer_idx)] else 0.0
+        cov = (selected / total) if total > 0 else 0.0
+        global_selected += selected
+        global_total += total
+        per_layer_meta.append(
+            {
+                "layer": int(layer_idx),
+                "k": int(len(hm[int(layer_idx)])),
+                "coverage": float(cov),
+                "selected_experts": [int(x) for x in hm[int(layer_idx)]],
+            }
+        )
 
     if out_json is None:
         dir_name = os.path.dirname(pt_path)
@@ -238,11 +300,238 @@ def build_hotmap_by_coverage(
     with open(out_json, "w") as f:
         json.dump({str(l): exps for l, exps in hm.items()}, f, indent=2)
 
+    coverages = [float(row["coverage"]) for row in per_layer_meta]
+    meta = {
+        "schema_version": 1,
+        "source_telemetry": pt_path,
+        "hotmap_json": out_json,
+        "method": "coverage",
+        "score_mode": mode,
+        "constraints": {
+            "coverage_pct": float(coverage_pct),
+            "min_k": int(min_k) if min_k is not None else None,
+            "max_k": int(max_k) if max_k is not None else None,
+        },
+        "layers": int(len(k_values)),
+        "k_stats": {
+            "min": int(min(k_values)) if k_values else 0,
+            "mean": float(sum(k_values) / len(k_values)) if k_values else 0.0,
+            "max": int(max(k_values)) if k_values else 0,
+            "uniform": bool(len(set(k_values)) == 1) if k_values else True,
+            "total_slots": int(sum(k_values)) if k_values else 0,
+        },
+        "coverage_stats": {
+            "min": float(min(coverages)) if coverages else 0.0,
+            "mean": float(sum(coverages) / len(coverages)) if coverages else 0.0,
+            "max": float(max(coverages)) if coverages else 0.0,
+        },
+        "global_coverage": float(global_selected / global_total) if global_total > 0 else 0.0,
+        "per_layer": per_layer_meta,
+    }
+    meta_path = _write_hotmap_metadata(out_json, meta)
+
     print(
         f"Hotmap saved: {out_json} | "
         f"k stats -> min={min(k_values)}, mean={sum(k_values)/len(k_values):.2f}, max={max(k_values)}"
     )
+    print(f"Hotmap metadata saved: {meta_path}")
     return out_json
+
+
+def build_hotmap_by_budget(
+    pt_path: str,
+    budget_per_layer: Optional[float] = None,
+    total_budget: Optional[int] = None,
+    out_json: Optional[str] = None,
+    mode: str = "counts",
+    min_k: Optional[int] = 1,
+    max_k: Optional[int] = None,
+) -> str:
+    """
+    Builds a per-layer dynamic-k hotmap under an exact global budget.
+
+    Allocation objective:
+    - maximize covered routing score with fixed total routed slots
+    - score is defined by `mode` ('counts' or 'mass')
+    - greedy by marginal gain per extra expert (optimal for this separable monotone objective)
+    """
+    layers = _load_telemetry_layers(pt_path, mode=mode)
+    layer_ids = sorted(layers.keys())
+    if not layer_ids:
+        raise ValueError(f"No layers found in telemetry: {pt_path}")
+
+    n_layers = len(layer_ids)
+    n_experts = int(layers[layer_ids[0]].numel())
+    if any(int(t.numel()) != n_experts for t in layers.values()):
+        raise ValueError("All layers must have the same number of experts for fixed-budget allocation.")
+
+    k_min = int(min_k) if min_k is not None else 1
+    k_max = int(max_k) if max_k is not None else n_experts
+    if k_min < 0:
+        raise ValueError(f"min_k must be >= 0, got {k_min}")
+    if k_max <= 0:
+        raise ValueError(f"max_k must be > 0, got {k_max}")
+    if k_min > k_max:
+        raise ValueError(f"min_k ({k_min}) cannot exceed max_k ({k_max})")
+    if k_max > n_experts:
+        k_max = n_experts
+
+    if total_budget is None:
+        if budget_per_layer is None:
+            raise ValueError("Provide either total_budget or budget_per_layer for fixed-budget mode.")
+        total_budget = int(round(float(budget_per_layer) * n_layers))
+    else:
+        total_budget = int(total_budget)
+
+    if total_budget <= 0:
+        raise ValueError(f"total_budget must be > 0, got {total_budget}")
+
+    min_total = n_layers * k_min
+    max_total = n_layers * k_max
+    if total_budget < min_total or total_budget > max_total:
+        raise ValueError(
+            f"total_budget={total_budget} out of feasible range [{min_total}, {max_total}] "
+            f"for n_layers={n_layers}, min_k={k_min}, max_k={k_max}"
+        )
+
+    print(
+        "Building Fixed-Budget Hotmap "
+        f"(mode={mode}, total_budget={total_budget}, avg_budget={total_budget / n_layers:.2f}, "
+        f"min_k={k_min}, max_k={k_max}) from {os.path.basename(pt_path)}..."
+    )
+
+    # Pre-sort once per layer.
+    sorted_idx: Dict[int, torch.Tensor] = {}
+    marginal_gains: Dict[int, List[float]] = {}
+    for li in layer_ids:
+        vals, idx = torch.sort(layers[li].float(), descending=True)
+        sorted_idx[li] = idx
+        total = float(vals.sum().item())
+        if total <= 0:
+            gains = [0.0] * int(vals.numel())
+        else:
+            gains = (vals / total).tolist()
+        marginal_gains[li] = gains
+
+    # Initialize all layers at k_min and allocate the remaining slots greedily.
+    k_alloc = {li: k_min for li in layer_ids}
+    used = n_layers * k_min
+    remaining = total_budget - used
+
+    # Max-heap by next marginal gain: (-gain, layer_id)
+    heap: List[tuple] = []
+    for li in layer_ids:
+        if k_alloc[li] < k_max:
+            next_gain = marginal_gains[li][k_alloc[li]]
+            heapq.heappush(heap, (-float(next_gain), li))
+
+    while remaining > 0:
+        if not heap:
+            break
+        neg_gain, li = heapq.heappop(heap)
+        if k_alloc[li] >= k_max:
+            continue
+        k_alloc[li] += 1
+        remaining -= 1
+        if k_alloc[li] < k_max:
+            next_gain = marginal_gains[li][k_alloc[li]]
+            heapq.heappush(heap, (-float(next_gain), li))
+
+    if remaining != 0:
+        raise RuntimeError(
+            f"Failed to allocate full budget: remaining={remaining}, used={total_budget - remaining}, total={total_budget}"
+        )
+
+    hm: Dict[int, List[int]] = {}
+    k_values: List[int] = []
+    per_layer_meta: List[Dict[str, Any]] = []
+    global_selected = 0.0
+    global_total = 0.0
+    for li in layer_ids:
+        k_layer = int(k_alloc[li])
+        picks = sorted(int(x) for x in sorted_idx[li][:k_layer].tolist())
+        hm[int(li)] = picks
+        k_values.append(k_layer)
+        scores = layers[li].float()
+        total = float(scores.sum().item())
+        selected = float(scores[picks].sum().item()) if picks else 0.0
+        cov = (selected / total) if total > 0 else 0.0
+        global_selected += selected
+        global_total += total
+        per_layer_meta.append(
+            {
+                "layer": int(li),
+                "k": int(k_layer),
+                "coverage": float(cov),
+                "selected_experts": [int(x) for x in picks],
+            }
+        )
+
+    if out_json is None:
+        dir_name = os.path.dirname(pt_path)
+        base_name = os.path.splitext(os.path.basename(pt_path))[0]
+        avg_tag = _coverage_tag(total_budget / n_layers)
+        clamp_tag = ""
+        if min_k is not None or max_k is not None:
+            clamp_tag = f"_min{min_k if min_k is not None else 'na'}_max{max_k if max_k is not None else 'na'}"
+        out_json = os.path.join(
+            dir_name,
+            f"{base_name}_hotmap_{mode}_budget{total_budget}_kavg{avg_tag}{clamp_tag}.json",
+        )
+
+    with open(out_json, "w") as f:
+        json.dump({str(l): exps for l, exps in hm.items()}, f, indent=2)
+
+    coverages = [float(row["coverage"]) for row in per_layer_meta]
+    meta = {
+        "schema_version": 1,
+        "source_telemetry": pt_path,
+        "hotmap_json": out_json,
+        "method": "budget",
+        "score_mode": mode,
+        "constraints": {
+            "budget_per_layer_requested": float(budget_per_layer) if budget_per_layer is not None else None,
+            "total_budget": int(total_budget),
+            "min_k": int(min_k) if min_k is not None else None,
+            "max_k": int(max_k) if max_k is not None else None,
+        },
+        "layers": int(len(k_values)),
+        "k_stats": {
+            "min": int(min(k_values)) if k_values else 0,
+            "mean": float(sum(k_values) / len(k_values)) if k_values else 0.0,
+            "max": int(max(k_values)) if k_values else 0,
+            "uniform": bool(len(set(k_values)) == 1) if k_values else True,
+            "total_slots": int(sum(k_values)) if k_values else 0,
+        },
+        "coverage_stats": {
+            "min": float(min(coverages)) if coverages else 0.0,
+            "mean": float(sum(coverages) / len(coverages)) if coverages else 0.0,
+            "max": float(max(coverages)) if coverages else 0.0,
+        },
+        "global_coverage": float(global_selected / global_total) if global_total > 0 else 0.0,
+        "per_layer": per_layer_meta,
+    }
+    meta_path = _write_hotmap_metadata(out_json, meta)
+
+    print(
+        f"Hotmap saved: {out_json} | "
+        f"k stats -> min={min(k_values)}, mean={sum(k_values)/len(k_values):.2f}, max={max(k_values)}"
+    )
+    print(f"Hotmap metadata saved: {meta_path}")
+    return out_json
+
+
+def _hotmap_meta_path(out_json: str) -> str:
+    if out_json.endswith(".json"):
+        return out_json[:-5] + ".meta.json"
+    return out_json + ".meta.json"
+
+
+def _write_hotmap_metadata(out_json: str, payload: Dict[str, Any]) -> str:
+    meta_path = _hotmap_meta_path(out_json)
+    with open(meta_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    return meta_path
 
 
 def _coverage_tag(coverage_pct: float) -> str:

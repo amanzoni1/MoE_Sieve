@@ -280,7 +280,7 @@ DATASETS = {
         "name": None,
         "split": "train",              # 7,000 examples; eval on validation (1,034)
         "text_fn": fmt_spider,
-        "lr": 4e-4, "epochs": 2,      # low-entropy anchor — H=0.874
+        "lr": 4e-4, "epochs": 3,      # low-entropy anchor — H=0.874
     },
     "hellaswag": {
         "path": "Rowan/hellaswag",
