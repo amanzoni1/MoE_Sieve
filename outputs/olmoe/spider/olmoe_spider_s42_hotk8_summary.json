@@ -1,0 +1,51 @@
+{
+  "run_name": "olmoe_spider_s42_hotk8",
+  "model_name": "allenai/OLMoE-1B-7B-0924",
+  "adapter": "AManzoni/olmoe_spider_s42_hotk8",
+  "dataset": "spider",
+  "split": "validation",
+  "n": 1034,
+  "bs": 8,
+  "max_new_tokens": 256,
+  "correct": 263,
+  "total": 1034,
+  "acc": 0.25435203094777564,
+  "normalized_exact_match": 0.25435203094777564,
+  "mean_token_f1": 0.740620006598638,
+  "metric_note": "acc = normalized string exact match (proxy). For official Test Suite Accuracy run: cd test-suite-sql-eval && python3 evaluation.py --gold /workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs/gold.txt --pred /workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs/pred.txt --db database/ --table tables.json --etype exec",
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8.jsonl",
+  "ts_inputs_dir": "/workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs",
+  "official_eval": {
+    "enabled": true,
+    "output_json": "/workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs/official_eval_output.json",
+    "return_code": 0,
+    "command": [
+      "python3",
+      "/workspace/test-suite-sql-eval/evaluation.py",
+      "--gold",
+      "/workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs/gold.txt",
+      "--pred",
+      "/workspace/MoE_Sieve_Project/outputs/eval_results/olmoe_spider_s42_hotk8_ts_inputs/pred.txt",
+      "--db",
+      "/workspace/test-suite-sql-eval/database",
+      "--etype",
+      "exec"
+    ],
+    "parsed_metrics": {
+      "official_exec_acc_easy": 0.569,
+      "official_exec_acc_medium": 0.372,
+      "official_exec_acc_hard": 0.322,
+      "official_exec_acc_extra": 0.223,
+      "official_exec_acc_all": 0.387,
+      "official_exec_acc": 0.387,
+      "official_test_suite_acc": 0.387
+    }
+  },
+  "official_exec_acc_easy": 0.569,
+  "official_exec_acc_medium": 0.372,
+  "official_exec_acc_hard": 0.322,
+  "official_exec_acc_extra": 0.223,
+  "official_exec_acc_all": 0.387,
+  "official_exec_acc": 0.387,
+  "official_test_suite_acc": 0.387
+}

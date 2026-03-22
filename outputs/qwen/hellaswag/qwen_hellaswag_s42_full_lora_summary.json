@@ -1,0 +1,17 @@
+{
+  "run_name": "qwen_hellaswag_s42_full_lora",
+  "model_name": "Qwen/Qwen1.5-MoE-A2.7B",
+  "adapter": "AManzoni/qwen_hellaswag_s42_full_lora",
+  "dataset": "hellaswag",
+  "split": "validation",
+  "n": 10042,
+  "bs": 8,
+  "max_seq_len": 2048,
+  "options_per_pass": 2,
+  "metric": "option_loglikelihood_acc",
+  "length_normalized": true,
+  "correct": 8858,
+  "total": 10042,
+  "acc": 0.8820952001593309,
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/hellaswag/qwen_hellaswag_s42_full_lora.jsonl"
+}

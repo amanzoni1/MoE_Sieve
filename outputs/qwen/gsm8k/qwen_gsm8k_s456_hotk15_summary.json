@@ -1,0 +1,15 @@
+{
+  "run_name": "qwen_gsm8k_s456_hotk15",
+  "model_name": "Qwen/Qwen1.5-MoE-A2.7B",
+  "adapter": "AManzoni/qwen_gsm8k_s456_hotk15",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n": 1319,
+  "bs": 8,
+  "max_new_tokens": 512,
+  "prompt_template": "Question: {q}\nAnswer:",
+  "correct": 795,
+  "total": 1319,
+  "acc": 0.6027293404094011,
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/qwen/qwen_gsm8k_s456_hotk15.jsonl"
+}

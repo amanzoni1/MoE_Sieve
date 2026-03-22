@@ -1,0 +1,25 @@
+{
+  "run_name": "olmoe_spider_s6969_hotk16",
+  "model_name": "allenai/OLMoE-1B-7B-0924",
+  "adapter": "AManzoni/olmoe_spider_s6969_hotk16",
+  "dataset": "spider",
+  "split": "validation",
+  "n": 1034,
+  "bs": 8,
+  "max_new_tokens": 256,
+  "correct": 254,
+  "total": 1034,
+  "acc": 0.24564796905222436,
+  "normalized_exact_match": 0.24564796905222436,
+  "mean_token_f1": 0.7582593364996515,
+  "metric_note": "acc = normalized string exact match (proxy). For official Test Suite Accuracy run: cd test-suite-sql-eval && python3 evaluation.py --gold /workspace/MoE_Sieve_Project/outputs/eval_results/spider/olmoe_spider_s6969_hotk16_ts_inputs/gold.txt --pred /workspace/MoE_Sieve_Project/outputs/eval_results/spider/olmoe_spider_s6969_hotk16_ts_inputs/pred.txt --db database/ --table tables.json --etype exec",
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/spider/olmoe_spider_s6969_hotk16.jsonl",
+  "ts_inputs_dir": "/workspace/MoE_Sieve_Project/outputs/eval_results/spider/olmoe_spider_s6969_hotk16_ts_inputs",
+  "official_eval": {
+    "enabled": false,
+    "output_json": null,
+    "return_code": null,
+    "command": null,
+    "parsed_metrics": {}
+  }
+}

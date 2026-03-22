@@ -7,10 +7,14 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 
-# Outputs
-outputs/
-*.jsonl
-*.json
+# Outputs: keep compact summaries and telemetry, ignore raw inference dumps
+outputs/**
+!outputs/**/
+!outputs/**/*.pt
+!outputs/**/*_summary.json
+!outputs/**/official_eval_output.txt
+!outputs/**/official_eval_error.txt
+!outputs/reports/**
 
 # HF / caches
 .cache/

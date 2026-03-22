@@ -1,0 +1,15 @@
+{
+  "run_name": "olmoe_gsm8k_s2026_randk16",
+  "model_name": "allenai/OLMoE-1B-7B-0924",
+  "adapter": "AManzoni/olmoe_gsm8k_s2026_randk16",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n": 1319,
+  "bs": 8,
+  "max_new_tokens": 512,
+  "prompt_template": "Question: {q}\nAnswer:",
+  "correct": 376,
+  "total": 1319,
+  "acc": 0.2850644427596664,
+  "predictions_jsonl": "/workspace/eval_results/olmoe_gsm8k_s2026_randk16.jsonl"
+}

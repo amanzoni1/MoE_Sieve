@@ -1,0 +1,15 @@
+{
+  "run_name": "qwen_gsm8k_s456_full_lora",
+  "model_name": "Qwen/Qwen1.5-MoE-A2.7B",
+  "adapter": "AManzoni/qwen_gsm8k_s456_full_lora",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n": 1319,
+  "bs": 8,
+  "max_new_tokens": 512,
+  "prompt_template": "Question: {q}\nAnswer:",
+  "correct": 802,
+  "total": 1319,
+  "acc": 0.6080363912054587,
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/qwen/qwen_gsm8k_s456_full_lora.jsonl"
+}

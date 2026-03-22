@@ -1,0 +1,17 @@
+{
+  "run_name": "olmoe_hellaswag_s99_hotk24",
+  "model_name": "allenai/OLMoE-1B-7B-0924",
+  "adapter": "AManzoni/olmoe_hellaswag_s99_hotk24",
+  "dataset": "hellaswag",
+  "split": "validation",
+  "n": 10042,
+  "bs": 8,
+  "max_seq_len": 2048,
+  "options_per_pass": 4,
+  "metric": "option_loglikelihood_acc",
+  "length_normalized": true,
+  "correct": 8040,
+  "total": 10042,
+  "acc": 0.800637323242382,
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/hellaswag/olmoe_hellaswag_s99_hotk24.jsonl"
+}

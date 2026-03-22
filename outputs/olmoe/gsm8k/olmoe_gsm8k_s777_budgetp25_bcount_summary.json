@@ -1,0 +1,15 @@
+{
+  "run_name": "olmoe_gsm8k_s777_budgetp25_bcount",
+  "model_name": "allenai/OLMoE-1B-7B-0924",
+  "adapter": "AManzoni/olmoe_gsm8k_s777_budgetp25_bcount",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n": 1319,
+  "bs": 8,
+  "max_new_tokens": 512,
+  "prompt_template": "Question: {q}\nAnswer:",
+  "correct": 418,
+  "total": 1319,
+  "acc": 0.3169067475360121,
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/gsm8k/olmoe_gsm8k_s777_budgetp25_bcount.jsonl"
+}

@@ -1,0 +1,25 @@
+{
+  "run_name": "qwen_spider_s789_budgetp25_bcount",
+  "model_name": "Qwen/Qwen1.5-MoE-A2.7B",
+  "adapter": "AManzoni/qwen_spider_s789_budgetp25_bcount",
+  "dataset": "spider",
+  "split": "validation",
+  "n": 1034,
+  "bs": 8,
+  "max_new_tokens": 256,
+  "correct": 376,
+  "total": 1034,
+  "acc": 0.36363636363636365,
+  "normalized_exact_match": 0.36363636363636365,
+  "mean_token_f1": 0.8052732791057208,
+  "metric_note": "acc = normalized string exact match (proxy). For official Test Suite Accuracy run: cd test-suite-sql-eval && python3 evaluation.py --gold /workspace/MoE_Sieve_Project/outputs/eval_results/spider/qwen_spider_s789_budgetp25_bcount_ts_inputs/gold.txt --pred /workspace/MoE_Sieve_Project/outputs/eval_results/spider/qwen_spider_s789_budgetp25_bcount_ts_inputs/pred.txt --db database/ --table tables.json --etype exec",
+  "predictions_jsonl": "/workspace/MoE_Sieve_Project/outputs/eval_results/spider/qwen_spider_s789_budgetp25_bcount.jsonl",
+  "ts_inputs_dir": "/workspace/MoE_Sieve_Project/outputs/eval_results/spider/qwen_spider_s789_budgetp25_bcount_ts_inputs",
+  "official_eval": {
+    "enabled": false,
+    "output_json": null,
+    "return_code": null,
+    "command": null,
+    "parsed_metrics": {}
+  }
+}
