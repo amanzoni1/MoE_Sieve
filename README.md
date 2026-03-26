@@ -1,6 +1,6 @@
 # MoE-Sieve
 
-Code, compact profiling and evaluation artifacts, a companion notebook, and the final paper PDF for [MoE-Sieve: Routing-Guided LoRA for Efficient MoE Fine-Tuning](https://arxiv.org/abs/2603.24044).
+Code, compact profiling and evaluation artifacts, a companion notebook, and the final paper PDF for [MoE-Sieve: Routing-Guided LoRA for Efficient MoE Fine-Tuning](https://arxiv.org/pdf/2603.24044).
 
 MoE-Sieve profiles expert routing in Mixture-of-Experts language models and uses that signal to decide which experts receive LoRA adapters. Across OLMoE and Qwen on GSM8K, HellaSwag, and Spider, tuning only the top 25% most-routed experts per layer stays competitive with full LoRA while substantially reducing trainable parameters, checkpoint size, and training time.
 
