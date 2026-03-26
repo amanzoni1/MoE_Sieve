@@ -23,6 +23,5 @@ wandb/
 .DS_Store
 **/.DS_Store
 
-.claude
+paper/
 notebooks/
-README.md
